@@ -79,7 +79,7 @@ type WeatherData = {
 
 type GeoPoint = { name: string; lat: number; lon: number };
 
-type WeatherApiSettings = { providerName: string; geocodeUrl: string; forecastUrl: string; };
+type WeatherApiSettings = { providerName: string; geocodeUrl: string; forecastUrl: string; flightLookupUrl: string; hotelLookupUrl: string; };
 type SiteSettings = {
   siteName: string; description: string; weatherApi: WeatherApiSettings;
   luggageCategories: LuggageCategory[];
@@ -91,22 +91,6 @@ type SiteSettings = {
 const CURRENCIES = ["USD","EUR","GBP","JPY","HKD","SGD","AUD","CNY","TWD","KRW","THB","MYR","CAD","CHF"];
 const EXPENSE_CATS = ["Food","Transport","Accommodation","Activities","Shopping","Other"];
 const ITINERARY_TRANSPORT_OPTIONS = ["Walk","Public Transit","Taxi","Rideshare","Rental Car","Bike","Train","Flight","Ferry","Other"];
-const FLIGHT_AUTO_DATA: Record<string,{ airline:string; departureAirport:string; arrivalAirport:string; departureClock:string; arrivalClock:string; terminal:string }> = {
-  "CX255": { airline:"Cathay Pacific", departureAirport:"HKG", arrivalAirport:"LHR", departureClock:"23:55", arrivalClock:"06:35", terminal:"1" },
-  "SQ322": { airline:"Singapore Airlines", departureAirport:"SIN", arrivalAirport:"LHR", departureClock:"23:45", arrivalClock:"05:55", terminal:"2" },
-  "BA028": { airline:"British Airways", departureAirport:"HKG", arrivalAirport:"LHR", departureClock:"23:00", arrivalClock:"05:30", terminal:"5" },
-  "NH811": { airline:"ANA", departureAirport:"NRT", arrivalAirport:"SIN", departureClock:"18:05", arrivalClock:"00:25", terminal:"1" },
-  "UA100": { airline:"United Airlines", departureAirport:"EWR", arrivalAirport:"LAX", departureClock:"08:20", arrivalClock:"11:35", terminal:"C" },
-};
-
-const HOTEL_AUTO_DATA = [
-  { keyword:"tokyo", hotelName:"Hilton Tokyo", hotelAddress:"6-6-2 Nishi-Shinjuku, Shinjuku City, Tokyo", contact:"+81 3-3344-5111", roomType:"Deluxe" },
-  { keyword:"singapore", hotelName:"Marina Bay Sands", hotelAddress:"10 Bayfront Avenue, Singapore 018956", contact:"+65 6688 8868", roomType:"Skyline" },
-  { keyword:"london", hotelName:"The Royal Horseguards", hotelAddress:"2 Whitehall Court, London SW1A 2EJ", contact:"+44 20 7451 0390", roomType:"Double" },
-  { keyword:"osaka", hotelName:"Swissotel Nankai Osaka", hotelAddress:"5-1-60 Namba, Chuo-ku, Osaka", contact:"+81 6-6646-1111", roomType:"Classic" },
-  { keyword:"paris", hotelName:"Hôtel Le Belmont", hotelAddress:"30 Rue de Bassano, 75116 Paris", contact:"+33 1 53 57 75 00", roomType:"Superior" },
-] as const;
-
 const weatherCodeMap: Record<number,string> = {
   0:"Clear sky",1:"Mostly clear",2:"Partly cloudy",3:"Overcast",
   45:"Fog",48:"Rime fog",51:"Light drizzle",53:"Drizzle",55:"Dense drizzle",
@@ -135,6 +119,8 @@ const defaultSiteSettings: SiteSettings = {
     providerName:"Open-Meteo",
     geocodeUrl:"https://geocoding-api.open-meteo.com/v1/search?name={query}&count=1&language=en&format=json",
     forecastUrl:"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,weather_code&forecast_days=7&timezone=auto",
+    flightLookupUrl:"https://api.adsbdb.com/v0/callsign/{flightNumber}",
+    hotelLookupUrl:"https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=hotel%20{query}",
   },
   luggageCategories: defaultLuggageCats,
 };
@@ -246,6 +232,8 @@ function normSite(i:unknown):SiteSettings{
       providerName:s.weatherApi?.providerName??defaultSiteSettings.weatherApi.providerName,
       geocodeUrl:s.weatherApi?.geocodeUrl??defaultSiteSettings.weatherApi.geocodeUrl,
       forecastUrl:s.weatherApi?.forecastUrl??defaultSiteSettings.weatherApi.forecastUrl,
+      flightLookupUrl:s.weatherApi?.flightLookupUrl??defaultSiteSettings.weatherApi.flightLookupUrl,
+      hotelLookupUrl:s.weatherApi?.hotelLookupUrl??defaultSiteSettings.weatherApi.hotelLookupUrl,
     },
     luggageCategories:Array.isArray(s.luggageCategories)&&s.luggageCategories.length>0?s.luggageCategories:defaultLuggageCats,
   };
@@ -404,21 +392,44 @@ function meetsPasswordPolicy(password:string){
   return password.length>3 && /[A-Z]/.test(password) && /\d/.test(password) && /[^A-Za-z0-9]/.test(password);
 }
 
-function suggestFlightLeg(flightNumber:string,date:string){
+async function searchFlightByNumber(siteCfg:SiteSettings,flightNumber:string,date?:string){
   const normalized=flightNumber.replace(/\s+/g,"").toUpperCase();
-  const hit=FLIGHT_AUTO_DATA[normalized];
-  if(!hit)return null;
-  const depart=date?`${date}T${hit.departureClock}`:"";
-  const arrive=date?`${date}T${hit.arrivalClock}`:"";
-  return { airline:hit.airline, departureAirport:hit.departureAirport, arrivalAirport:hit.arrivalAirport, departureTime:depart, arrivalTime:arrive, terminal:hit.terminal };
+  if(!normalized)return null;
+  try{
+    const resp=await fetch(buildUrl(siteCfg.weatherApi.flightLookupUrl,{flightNumber:normalized}));
+    if(!resp.ok)return null;
+    const data=await resp.json();
+    const route=data?.response?.flightroute;
+    if(!route)return null;
+    const datePart=(date||"").slice(0,10);
+    return {
+      airline: route.airline?.name ?? "",
+      departureAirport: route.origin?.iata_code ?? route.origin?.icao_code ?? "",
+      arrivalAirport: route.destination?.iata_code ?? route.destination?.icao_code ?? "",
+      departureTime: datePart?`${datePart}T09:00`:"",
+      arrivalTime: datePart?`${datePart}T12:00`:"",
+      terminal: "",
+    };
+  }catch{return null;}
 }
 
-function suggestHotelStay(hotelName:string,location:string){
-  const query=`${hotelName} ${location}`.toLowerCase();
-  const hit=HOTEL_AUTO_DATA.find(item=>query.includes(item.keyword));
-  if(hit)return hit;
-  if(location.trim()) return { hotelName:hotelName.trim(), hotelAddress:location.trim(), contact:"", roomType:"" };
-  return null;
+async function searchHotelByQuery(siteCfg:SiteSettings,hotelName:string,location:string){
+  const q=[hotelName,location].filter(Boolean).join(" ").trim();
+  if(!q)return null;
+  try{
+    const url=buildUrl(siteCfg.weatherApi.hotelLookupUrl,{query:q});
+    const resp=await fetch(url,{headers:{"Accept":"application/json"}});
+    if(!resp.ok)return null;
+    const data=await resp.json();
+    const first=(Array.isArray(data)?data[0]:null) as {name?:string;display_name?:string}|null;
+    if(!first)return null;
+    return {
+      hotelName: hotelName.trim() || first.name || q,
+      hotelAddress: first.display_name || location,
+      contact: "",
+      roomType: "",
+    };
+  }catch{return null;}
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════
@@ -898,7 +909,7 @@ function TripDetail({trip,user,profiles,siteCfg,th,t,onBack,onUpdate,onAddExp,on
     {tab==="itinerary"&&<TripItinerary trip={trip} th={th} t={t} onUpdate={onUpdateItin}/>}
     {tab==="expenses"&&<TripExpenses trip={trip} user={user} profiles={profiles} th={th} t={t} onAdd={onAddExp} onRemove={onRemoveExp}/>}
     {tab==="luggage"&&<TripLuggage trip={trip} siteCfg={siteCfg} th={th} t={t} onAdd={onAddPack} onToggle={onTogglePack} onRemove={onRemovePack}/>}
-    {tab==="settings"&&<TripSettings trip={trip} isOwner={isOwner} th={th} t={t} onUpdate={onUpdate}/>}
+    {tab==="settings"&&<TripSettings trip={trip} isOwner={isOwner} siteCfg={siteCfg} th={th} t={t} onUpdate={onUpdate}/>}
   </div>;
 }
 
@@ -1173,11 +1184,9 @@ function TripTravelers({trip,profiles,th,t}:{trip:Trip;profiles:Profile[];th:The
   const members=trip.members.map(id=>profiles.find(profile=>profile.id===id)).filter(Boolean) as Profile[];
 
   const memberStats=members.map(member=>{
-    const assigned=trip.packingList.filter(item=>item.assignedTo===dn(member));
-    const packed=assigned.filter(item=>item.packed).length;
     const paid=trip.expenses.filter(exp=>exp.paidBy===member.id).reduce((sum,exp)=>sum+exp.amount,0);
     const expenseTouches=trip.expenses.filter(exp=>exp.participants.includes(member.id) || exp.paidBy===member.id).length;
-    return {member,assigned:assigned.length,packed,paid,expenseTouches};
+    return {member,paid,expenseTouches};
   });
 
   return <div className="space-y-5">
@@ -1191,15 +1200,11 @@ function TripTravelers({trip,profiles,th,t}:{trip:Trip;profiles:Profile[];th:The
           <p className={cx("text-xs uppercase tracking-[0.16em]",th==="dark"?"text-slate-400":"text-slate-500")}>{t("expenses")}</p>
           <p className="mt-2 text-2xl font-bold">{trip.expenses.length}</p>
         </div>
-        <div className={cx("rounded-2xl p-4",th==="dark"?"bg-white/[0.04]":"bg-slate-100")}>
-          <p className={cx("text-xs uppercase tracking-[0.16em]",th==="dark"?"text-slate-400":"text-slate-500")}>{t("luggage")}</p>
-          <p className="mt-2 text-2xl font-bold">{trip.packingList.length}</p>
-        </div>
       </div>
     </Card>
 
     <div className="grid xl:grid-cols-2 gap-5">
-      {memberStats.map(({member,assigned,packed,paid,expenseTouches})=><Card key={member.id} th={th} className="p-7 space-y-5">
+      {memberStats.map(({member,paid,expenseTouches})=><Card key={member.id} th={th} className="p-7 space-y-5">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-4">
             <Avatar name={dn(member)} th={th}/>
@@ -1211,11 +1216,7 @@ function TripTravelers({trip,profiles,th,t}:{trip:Trip;profiles:Profile[];th:The
           <Badge label={member.id===trip.ownerId?t("owner"):t("travelers")} th={th} color={member.id===trip.ownerId?"purple":"blue"}/>
         </div>
 
-        <div className="grid sm:grid-cols-3 gap-2">
-          <div className={cx("rounded-2xl p-3",th==="dark"?"bg-white/[0.04]":"bg-slate-100")}>
-            <p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("packed")}</p>
-            <p className="mt-1 font-semibold">{packed}/{assigned||0}</p>
-          </div>
+        <div className="grid sm:grid-cols-2 gap-2">
           <div className={cx("rounded-2xl p-3",th==="dark"?"bg-white/[0.04]":"bg-slate-100")}>
             <p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("totalPaid")}</p>
             <p className="mt-1 font-semibold">{fmtCur(paid)}</p>
@@ -1227,6 +1228,8 @@ function TripTravelers({trip,profiles,th,t}:{trip:Trip;profiles:Profile[];th:The
         </div>
 
         <div className="grid gap-2">
+          <InfoRow label={t("tripId")} value={trip.id} th={th}/>
+          <InfoRow label={t("status")} value={member.id===trip.ownerId?t("owner"):t("travelers")} th={th}/>
           <InfoRow label={t("email")} value={member.email} th={th}/>
           <InfoRow label={t("phone")} value={member.phone} th={th}/>
           {member.nationality&&<InfoRow label={t("nationality")} value={member.nationality} th={th}/>} 
@@ -1256,6 +1259,7 @@ function TripItinerary({trip,th,t,onUpdate}:{trip:Trip;th:ThemeMode;t:(k:TKey)=>
   const nextOrder=(trip.itinerary.filter(it=>it.day===day).reduce((max,it)=>Math.max(max,it.order),0))+1;
   const totalItems=trip.itinerary.length;
   const photoCount=trip.itinerary.filter(it=>Boolean(it.photo)).length;
+  const dayPhotoCount=dayItems.filter(it=>Boolean(it.photo)).length;
 
   const saveActivity=(e:React.FormEvent)=>{
     e.preventDefault();
@@ -1319,19 +1323,28 @@ function TripItinerary({trip,th,t,onUpdate}:{trip:Trip;th:ThemeMode;t:(k:TKey)=>
 
   return <div className="grid gap-6 lg:grid-cols-[1.45fr_.95fr]">
     <div className="space-y-5">
-      <Card th={th} className="p-5">
+      <Card th={th} className="p-5 space-y-4">
         <div className="grid sm:grid-cols-3 gap-3">
           <div className={cx("rounded-2xl p-4",th==="dark"?"bg-white/[0.04]":"bg-slate-100")}><p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("itinerary")}</p><p className="mt-1 text-2xl font-bold">{totalItems}</p></div>
           <div className={cx("rounded-2xl p-4",th==="dark"?"bg-white/[0.04]":"bg-slate-100")}><p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("day")}</p><p className="mt-1 text-2xl font-bold">{day}/{trip.duration}</p></div>
           <div className={cx("rounded-2xl p-4",th==="dark"?"bg-white/[0.04]":"bg-slate-100")}><p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("itineraryPhoto")}</p><p className="mt-1 text-2xl font-bold">{photoCount}</p></div>
         </div>
+        <div>
+          <div className="mb-2 flex items-center justify-between text-sm">
+            <p className={cx(th==="dark"?"text-slate-300":"text-slate-700")}>{t("day")} {day}</p>
+            <p className={cx(th==="dark"?"text-slate-400":"text-slate-500")}>{dayItems.length} items · {dayPhotoCount} photos</p>
+          </div>
+          <div className={cx("h-2 overflow-hidden rounded-full",th==="dark"?"bg-white/10":"bg-slate-200")}>
+            <div className={cx("h-full rounded-full",th==="dark"?"bg-cyan-300":"bg-blue-600")} style={{width:`${Math.min(100,Math.max(8,(day/trip.duration)*100))}%`}}/>
+          </div>
+        </div>
       </Card>
       <Card th={th} className="p-8">
         <div className="mb-6 flex items-center gap-2 overflow-x-auto pb-2">
           {Array.from({length:trip.duration},(_,i)=>i+1).map(d=><button key={d} onClick={()=>setDay(d)}
-            className={cx("rounded-full px-4 py-2 font-medium whitespace-nowrap transition",
-              d===day?(th==="dark"?"bg-cyan-400 text-slate-950":"bg-slate-800 text-white")
-                :(th==="dark"?"bg-white/5 text-slate-400 hover:bg-white/10":"bg-slate-100 text-slate-600 hover:bg-slate-200"))}>
+            className={cx("rounded-2xl px-4 py-2.5 font-medium whitespace-nowrap transition border",
+              d===day?(th==="dark"?"bg-cyan-400 text-slate-950 border-cyan-300":"bg-slate-800 text-white border-slate-700")
+                :(th==="dark"?"bg-white/5 text-slate-400 hover:bg-white/10 border-white/10":"bg-slate-100 text-slate-600 hover:bg-slate-200 border-slate-200"))}>
             {t("day")} {d}
           </button>)}
         </div>
@@ -1358,8 +1371,8 @@ function TripItinerary({trip,th,t,onUpdate}:{trip:Trip;th:ThemeMode;t:(k:TKey)=>
                   {it.photo&&<img src={it.photo} alt={it.title} className="mt-4 h-48 w-full rounded-2xl border border-white/10 object-cover"/>}
                 </div>
                 <div className="flex gap-2">
-                  <button onClick={()=>edit(it)} className="text-lg opacity-60 hover:opacity-100">✏️</button>
-                  <button onClick={()=>remove(it.id)} className="text-lg opacity-60 hover:opacity-100">✕</button>
+                  <button onClick={()=>edit(it)} className={cx("rounded-full px-2.5 py-1 text-sm",th==="dark"?"bg-white/10 hover:bg-white/20":"bg-slate-100 hover:bg-slate-200")}>✏️</button>
+                  <button onClick={()=>remove(it.id)} className={cx("rounded-full px-2.5 py-1 text-sm text-rose-400",th==="dark"?"bg-rose-500/10 hover:bg-rose-500/20":"bg-rose-50 hover:bg-rose-100")}>✕</button>
                 </div>
               </div>
             </Card>
@@ -1705,11 +1718,15 @@ function TripLuggage({trip,siteCfg,th,t,onAdd,onToggle,onRemove}:{trip:Trip;site
   </div>;
 }
 
-function TripSettings({trip,isOwner,th,t,onUpdate}:{trip:Trip;isOwner:boolean;th:ThemeMode;t:(k:TKey)=>string;onUpdate:(id:string,d:Partial<Trip>)=>void}){
+function TripSettings({trip,isOwner,siteCfg,th,t,onUpdate}:{trip:Trip;isOwner:boolean;siteCfg:SiteSettings;th:ThemeMode;t:(k:TKey)=>string;onUpdate:(id:string,d:Partial<Trip>)=>void}){
   const [form,setForm]=useState(()=>({...trip,bannerImageUrl:""}));
   const [saved,setSaved]=useState(false);
   const [flightMessage,setFlightMessage]=useState("");
   const [hotelMessage,setHotelMessage]=useState("");
+  const [flightSearchingId,setFlightSearchingId]=useState<string|null>(null);
+  const [hotelSearchingId,setHotelSearchingId]=useState<string|null>(null);
+  const [quickFlightNumber,setQuickFlightNumber]=useState("");
+  const [quickHotelQuery,setQuickHotelQuery]=useState("");
 
   useEffect(()=>{ setForm({...trip,bannerImageUrl:""}); },[trip]);
 
@@ -1747,21 +1764,65 @@ function TripSettings({trip,isOwner,th,t,onUpdate}:{trip:Trip;isOwner:boolean;th
   const addHotel=()=>setForm(f=>({...f,hotels:[...f.hotels,{id:uid("htl"),hotelName:"",hotelAddress:"",roomType:"",checkIn:"",checkOut:"",confirmationCode:"",contact:"",notes:""}]}));
   const removeHotel=(hotelId:string)=>setForm(f=>({...f,hotels:f.hotels.filter(hotel=>hotel.id!==hotelId)}));
 
-  const autofillFlight=(leg:FlightLeg)=>{
-    const flightDate=(leg.departureTime||"").slice(0,10);
-    if(!leg.flightNumber.trim()||!flightDate){setFlightMessage(t("flightSearchHint"));return;}
-    const suggestion=suggestFlightLeg(leg.flightNumber,flightDate);
-    if(!suggestion){setFlightMessage(t("autoFillNoMatch"));return;}
-    updateLeg(leg.id,suggestion);
-    setFlightMessage(t("flightAutoFilled"));
+  const ensureFirstLeg=()=>{
+    if(form.flightLegs.length>0)return form.flightLegs[0];
+    const created={id:uid("flt"),airline:"",flightNumber:"",departureAirport:"",arrivalAirport:"",departureTime:"",arrivalTime:"",terminal:"",bookingReference:"",seat:"",baggage:"",notes:""};
+    setForm(f=>({...f,flightLegs:[created,...f.flightLegs]}));
+    return created;
   };
 
-  const autofillHotel=(hotel:HotelStay)=>{
+  const ensureFirstHotel=()=>{
+    if(form.hotels.length>0)return form.hotels[0];
+    const created={id:uid("htl"),hotelName:"",hotelAddress:"",roomType:"",checkIn:"",checkOut:"",confirmationCode:"",contact:"",notes:""};
+    setForm(f=>({...f,hotels:[created,...f.hotels]}));
+    return created;
+  };
+
+  const quickSearchFlight=async()=>{
+    if(!quickFlightNumber.trim()){setFlightMessage(t("flightNumberRequired"));return;}
+    const target=ensureFirstLeg();
+    setFlightSearchingId(target.id);
+    try{
+      const suggestion=await searchFlightByNumber(siteCfg,quickFlightNumber,target.departureTime);
+      if(!suggestion){setFlightMessage(t("autoFillNoMatch"));return;}
+      updateLeg(target.id,{...suggestion,flightNumber:quickFlightNumber.trim()});
+      setFlightMessage(t("flightAutoFilled"));
+    }finally{setFlightSearchingId(null);}
+  };
+
+  const quickSearchHotel=async()=>{
+    if(!quickHotelQuery.trim()&&!trip.location.trim()){setHotelMessage(t("hotelSearchHint"));return;}
+    const target=ensureFirstHotel();
+    setHotelSearchingId(target.id);
+    try{
+      const baseName=quickHotelQuery.trim()||target.hotelName;
+      const suggestion=await searchHotelByQuery(siteCfg,baseName,trip.location);
+      if(!suggestion){setHotelMessage(t("autoFillNoMatch"));return;}
+      updateHotel(target.id,{hotelName:suggestion.hotelName||baseName,hotelAddress:suggestion.hotelAddress||target.hotelAddress,roomType:suggestion.roomType||target.roomType,contact:suggestion.contact||target.contact});
+      setHotelMessage(t("hotelAutoFilled"));
+    }finally{setHotelSearchingId(null);}
+  };
+
+  const autofillFlight=async(leg:FlightLeg)=>{
+    if(!leg.flightNumber.trim()){setFlightMessage(t("flightNumberRequired"));return;}
+    setFlightSearchingId(leg.id);
+    try{
+      const suggestion=await searchFlightByNumber(siteCfg,leg.flightNumber,leg.departureTime);
+      if(!suggestion){setFlightMessage(t("autoFillNoMatch"));return;}
+      updateLeg(leg.id,suggestion);
+      setFlightMessage(t("flightAutoFilled"));
+    }finally{setFlightSearchingId(null);}
+  };
+
+  const autofillHotel=async(hotel:HotelStay)=>{
     if(!hotel.hotelName.trim()&&!trip.location.trim()){setHotelMessage(t("hotelSearchHint"));return;}
-    const suggestion=suggestHotelStay(hotel.hotelName,trip.location);
-    if(!suggestion){setHotelMessage(t("autoFillNoMatch"));return;}
-    updateHotel(hotel.id,{ hotelName:suggestion.hotelName||hotel.hotelName, hotelAddress:suggestion.hotelAddress||hotel.hotelAddress, roomType:suggestion.roomType||hotel.roomType, contact:suggestion.contact||hotel.contact });
-    setHotelMessage(t("hotelAutoFilled"));
+    setHotelSearchingId(hotel.id);
+    try{
+      const suggestion=await searchHotelByQuery(siteCfg,hotel.hotelName,trip.location);
+      if(!suggestion){setHotelMessage(t("autoFillNoMatch"));return;}
+      updateHotel(hotel.id,{ hotelName:suggestion.hotelName||hotel.hotelName, hotelAddress:suggestion.hotelAddress||hotel.hotelAddress, roomType:suggestion.roomType||hotel.roomType, contact:suggestion.contact||hotel.contact });
+      setHotelMessage(t("hotelAutoFilled"));
+    }finally{setHotelSearchingId(null);}
   };
 
   if(!isOwner){
@@ -1774,6 +1835,25 @@ function TripSettings({trip,isOwner,th,t,onUpdate}:{trip:Trip;isOwner:boolean;th
 
   return <Card th={th} className="p-8 space-y-6">
     <h2 className="text-2xl font-bold">{t("tripDetails")}</h2>
+    <Card th={th} className="p-6 space-y-4">
+      <h3 className="text-xl font-semibold">{t("quickSearch")}</h3>
+      <div className="grid lg:grid-cols-2 gap-4">
+        <div className={cx("rounded-2xl p-4 space-y-3",th==="dark"?"bg-white/[0.03]":"bg-slate-50")}>
+          <p className={cx("text-sm font-medium",th==="dark"?"text-slate-300":"text-slate-700")}>{t("quickFlightSearch")}</p>
+          <div className="flex gap-2">
+            <Input th={th} value={quickFlightNumber} onChange={e=>setQuickFlightNumber(e.target.value)} placeholder={t("flightNumber")} className="flex-1"/>
+            <Btn th={th} v="sec" sz="sm" type="button" onClick={()=>void quickSearchFlight()} disabled={Boolean(flightSearchingId)}>{flightSearchingId?t("loading"):t("search")}</Btn>
+          </div>
+        </div>
+        <div className={cx("rounded-2xl p-4 space-y-3",th==="dark"?"bg-white/[0.03]":"bg-slate-50")}>
+          <p className={cx("text-sm font-medium",th==="dark"?"text-slate-300":"text-slate-700")}>{t("quickHotelSearch")}</p>
+          <div className="flex gap-2">
+            <Input th={th} value={quickHotelQuery} onChange={e=>setQuickHotelQuery(e.target.value)} placeholder={t("hotelName")} className="flex-1"/>
+            <Btn th={th} v="sec" sz="sm" type="button" onClick={()=>void quickSearchHotel()} disabled={Boolean(hotelSearchingId)}>{hotelSearchingId?t("loading"):t("search")}</Btn>
+          </div>
+        </div>
+      </div>
+    </Card>
     <div className="space-y-6">
       <Card th={th} className="p-6 space-y-4">
         <div className="flex items-center justify-between gap-3">
@@ -1781,7 +1861,7 @@ function TripSettings({trip,isOwner,th,t,onUpdate}:{trip:Trip;isOwner:boolean;th
           <Btn th={th} v="sec" type="button" onClick={addLeg}>+ {t("addLeg")}</Btn>
         </div>
         {form.flightLegs.length===0&&<p className={cx("text-sm",th==="dark"?"text-slate-400":"text-slate-500")}>{t("noFlightDetails")}</p>}
-        <p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("flightSearchHint")}</p>
+        <p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("flightSearchByNumberHint")}</p>
         {flightMessage&&<p className={cx("text-sm",th==="dark"?"text-cyan-300":"text-blue-700")}>{flightMessage}</p>}
         <div className="space-y-4">
           {form.flightLegs.map((leg,index)=><div key={leg.id} className={cx("rounded-3xl border p-5 space-y-4",th==="dark"?"border-white/8 bg-white/[0.03]":"border-slate-200 bg-slate-50")}>
@@ -1791,13 +1871,13 @@ function TripSettings({trip,isOwner,th,t,onUpdate}:{trip:Trip;isOwner:boolean;th
                 <p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("autoSearchFlight")}</p>
               </div>
               <div className="flex items-center gap-2">
-                <Btn th={th} v="sec" sz="sm" type="button" onClick={()=>autofillFlight(leg)}>{t("search")}</Btn>
+                <Btn th={th} v="sec" sz="sm" type="button" onClick={()=>void autofillFlight(leg)} disabled={flightSearchingId===leg.id}>{flightSearchingId===leg.id?t("loading"):t("search")}</Btn>
                 <Btn th={th} v="danger" sz="sm" type="button" onClick={()=>removeLeg(leg.id)}>{t("remove")}</Btn>
               </div>
             </div>
             <div className="grid sm:grid-cols-2 gap-3">
               <Input th={th} label={t("airline")} value={leg.airline} onChange={e=>updateLeg(leg.id,{airline:e.target.value})}/>
-              <Input th={th} label={t("flightNumber")} value={leg.flightNumber} onChange={e=>updateLeg(leg.id,{flightNumber:e.target.value})} onBlur={()=>autofillFlight(leg)}/>
+              <Input th={th} label={t("flightNumber")} value={leg.flightNumber} onChange={e=>updateLeg(leg.id,{flightNumber:e.target.value})} onBlur={()=>void autofillFlight(leg)}/>
               <Input th={th} label={t("departureAirport")} value={leg.departureAirport} onChange={e=>updateLeg(leg.id,{departureAirport:e.target.value})}/>
               <Input th={th} label={t("arrivalAirport")} value={leg.arrivalAirport} onChange={e=>updateLeg(leg.id,{arrivalAirport:e.target.value})}/>
               <Input th={th} label={t("departureTime")} type="datetime-local" value={leg.departureTime} onChange={e=>updateLeg(leg.id,{departureTime:e.target.value})}/>
@@ -1828,7 +1908,7 @@ function TripSettings({trip,isOwner,th,t,onUpdate}:{trip:Trip;isOwner:boolean;th
                 <p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("autoFillHotel")}</p>
               </div>
               <div className="flex items-center gap-2">
-                <Btn th={th} v="sec" sz="sm" type="button" onClick={()=>autofillHotel(hotel)}>{t("search")}</Btn>
+                <Btn th={th} v="sec" sz="sm" type="button" onClick={()=>void autofillHotel(hotel)} disabled={hotelSearchingId===hotel.id}>{hotelSearchingId===hotel.id?t("loading"):t("search")}</Btn>
                 <Btn th={th} v="danger" sz="sm" type="button" onClick={()=>removeHotel(hotel.id)}>{t("remove")}</Btn>
               </div>
             </div>
@@ -2069,6 +2149,15 @@ function AdminWebsite({th,t,settings,onSave}:{th:ThemeMode;t:(k:TKey)=>string;se
       <Input th={th} label={t("providerName")} value={form.weatherApi.providerName} onChange={e=>setForm(f=>({...f,weatherApi:{...f.weatherApi,providerName:e.target.value}}))}/>
       <Input th={th} label={t("geocodeUrl")} value={form.weatherApi.geocodeUrl} onChange={e=>setForm(f=>({...f,weatherApi:{...f.weatherApi,geocodeUrl:e.target.value}}))}/>
       <Input th={th} label={t("forecastUrl")} value={form.weatherApi.forecastUrl} onChange={e=>setForm(f=>({...f,weatherApi:{...f.weatherApi,forecastUrl:e.target.value}}))}/>
+    </Card>
+
+    <Card th={th} className="p-6 space-y-4">
+      <h3 className="font-semibold text-xl">🔎 {t("lookupApi")}</h3>
+      <div className={cx("rounded-2xl p-5 border space-y-2 leading-relaxed",th==="dark"?"border-cyan-400/20 bg-cyan-400/5 text-cyan-300":"border-blue-200 bg-blue-50 text-blue-800")}>
+        <p>4. {t("apiHelp4")}</p><p>5. {t("apiHelp5")}</p><p>6. {t("apiHelp6")}</p>
+      </div>
+      <Input th={th} label={t("flightLookupUrl")} value={form.weatherApi.flightLookupUrl} onChange={e=>setForm(f=>({...f,weatherApi:{...f.weatherApi,flightLookupUrl:e.target.value}}))}/>
+      <Input th={th} label={t("hotelLookupUrl")} value={form.weatherApi.hotelLookupUrl} onChange={e=>setForm(f=>({...f,weatherApi:{...f.weatherApi,hotelLookupUrl:e.target.value}}))}/>
     </Card>
     <div className="flex gap-2 items-center">
       <Btn th={th} type="submit">{t("save")}</Btn>
