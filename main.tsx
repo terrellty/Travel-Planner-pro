@@ -91,6 +91,21 @@ type SiteSettings = {
 const CURRENCIES = ["USD","EUR","GBP","JPY","HKD","SGD","AUD","CNY","TWD","KRW","THB","MYR","CAD","CHF"];
 const EXPENSE_CATS = ["Food","Transport","Accommodation","Activities","Shopping","Other"];
 const ITINERARY_TRANSPORT_OPTIONS = ["Walk","Public Transit","Taxi","Rideshare","Rental Car","Bike","Train","Flight","Ferry","Other"];
+const FLIGHT_AUTO_DATA: Record<string,{ airline:string; departureAirport:string; arrivalAirport:string; departureClock:string; arrivalClock:string; terminal:string }> = {
+  "CX255": { airline:"Cathay Pacific", departureAirport:"HKG", arrivalAirport:"LHR", departureClock:"23:55", arrivalClock:"06:35", terminal:"1" },
+  "SQ322": { airline:"Singapore Airlines", departureAirport:"SIN", arrivalAirport:"LHR", departureClock:"23:45", arrivalClock:"05:55", terminal:"2" },
+  "BA028": { airline:"British Airways", departureAirport:"HKG", arrivalAirport:"LHR", departureClock:"23:00", arrivalClock:"05:30", terminal:"5" },
+  "NH811": { airline:"ANA", departureAirport:"NRT", arrivalAirport:"SIN", departureClock:"18:05", arrivalClock:"00:25", terminal:"1" },
+  "UA100": { airline:"United Airlines", departureAirport:"EWR", arrivalAirport:"LAX", departureClock:"08:20", arrivalClock:"11:35", terminal:"C" },
+};
+
+const HOTEL_AUTO_DATA = [
+  { keyword:"tokyo", hotelName:"Hilton Tokyo", hotelAddress:"6-6-2 Nishi-Shinjuku, Shinjuku City, Tokyo", contact:"+81 3-3344-5111", roomType:"Deluxe" },
+  { keyword:"singapore", hotelName:"Marina Bay Sands", hotelAddress:"10 Bayfront Avenue, Singapore 018956", contact:"+65 6688 8868", roomType:"Skyline" },
+  { keyword:"london", hotelName:"The Royal Horseguards", hotelAddress:"2 Whitehall Court, London SW1A 2EJ", contact:"+44 20 7451 0390", roomType:"Double" },
+  { keyword:"osaka", hotelName:"Swissotel Nankai Osaka", hotelAddress:"5-1-60 Namba, Chuo-ku, Osaka", contact:"+81 6-6646-1111", roomType:"Classic" },
+  { keyword:"paris", hotelName:"Hôtel Le Belmont", hotelAddress:"30 Rue de Bassano, 75116 Paris", contact:"+33 1 53 57 75 00", roomType:"Superior" },
+] as const;
 
 const weatherCodeMap: Record<number,string> = {
   0:"Clear sky",1:"Mostly clear",2:"Partly cloudy",3:"Overcast",
@@ -384,6 +399,28 @@ function readFile(file:File):Promise<string>{
   return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result as string);r.onerror=rej;r.readAsDataURL(file);});
 }
 
+
+function meetsPasswordPolicy(password:string){
+  return password.length>3 && /[A-Z]/.test(password) && /\d/.test(password) && /[^A-Za-z0-9]/.test(password);
+}
+
+function suggestFlightLeg(flightNumber:string,date:string){
+  const normalized=flightNumber.replace(/\s+/g,"").toUpperCase();
+  const hit=FLIGHT_AUTO_DATA[normalized];
+  if(!hit)return null;
+  const depart=date?`${date}T${hit.departureClock}`:"";
+  const arrive=date?`${date}T${hit.arrivalClock}`:"";
+  return { airline:hit.airline, departureAirport:hit.departureAirport, arrivalAirport:hit.arrivalAirport, departureTime:depart, arrivalTime:arrive, terminal:hit.terminal };
+}
+
+function suggestHotelStay(hotelName:string,location:string){
+  const query=`${hotelName} ${location}`.toLowerCase();
+  const hit=HOTEL_AUTO_DATA.find(item=>query.includes(item.keyword));
+  if(hit)return hit;
+  if(location.trim()) return { hotelName:hotelName.trim(), hotelAddress:location.trim(), contact:"", roomType:"" };
+  return null;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════════
    UI PRIMITIVES
    ═══════════════════════════════════════════════════════════════════════════════ */
@@ -557,6 +594,7 @@ function AuthModal({open,mode,th,t,onClose,onSignIn,onSignUp,onToggle}:{
       setErr("Please fill in all required fields.");return;
     }
     if(form.password!==form.password2){setErr(t("passwordMismatch"));return;}
+    if(!meetsPasswordPolicy(form.password)){setErr(t("passwordPolicy"));return;}
     const res=onSignUp({
       accountName:form.accountName.trim(),firstName:form.firstName.trim(),lastName:form.lastName.trim(),
       email:form.email.trim(),phone:form.phone.trim(),password:form.password,
@@ -693,7 +731,7 @@ function Dashboard({user,trips,th,t,onUpdate,onSelectTrip}:{user:Profile;trips:T
       </div>}
     </Card>
 
-    <div className="space-y-6">
+    <div className="space-y-7">
       <Card th={th} className="p-8">
         <h3 className="text-2xl font-bold mb-6">{t("tripSummary")}</h3>
         <div className="grid grid-cols-3 gap-4">
@@ -1614,6 +1652,8 @@ function TripLuggage({trip,siteCfg,th,t,onAdd,onToggle,onRemove}:{trip:Trip;site
 function TripSettings({trip,isOwner,th,t,onUpdate}:{trip:Trip;isOwner:boolean;th:ThemeMode;t:(k:TKey)=>string;onUpdate:(id:string,d:Partial<Trip>)=>void}){
   const [form,setForm]=useState(()=>({...trip,bannerImageUrl:""}));
   const [saved,setSaved]=useState(false);
+  const [flightMessage,setFlightMessage]=useState("");
+  const [hotelMessage,setHotelMessage]=useState("");
 
   useEffect(()=>{ setForm({...trip,bannerImageUrl:""}); },[trip]);
 
@@ -1651,6 +1691,23 @@ function TripSettings({trip,isOwner,th,t,onUpdate}:{trip:Trip;isOwner:boolean;th
   const addHotel=()=>setForm(f=>({...f,hotels:[...f.hotels,{id:uid("htl"),hotelName:"",hotelAddress:"",roomType:"",checkIn:"",checkOut:"",confirmationCode:"",contact:"",notes:""}]}));
   const removeHotel=(hotelId:string)=>setForm(f=>({...f,hotels:f.hotels.filter(hotel=>hotel.id!==hotelId)}));
 
+  const autofillFlight=(leg:FlightLeg)=>{
+    const flightDate=(leg.departureTime||"").slice(0,10);
+    if(!leg.flightNumber.trim()||!flightDate){setFlightMessage(t("flightSearchHint"));return;}
+    const suggestion=suggestFlightLeg(leg.flightNumber,flightDate);
+    if(!suggestion){setFlightMessage(t("autoFillNoMatch"));return;}
+    updateLeg(leg.id,suggestion);
+    setFlightMessage(t("flightAutoFilled"));
+  };
+
+  const autofillHotel=(hotel:HotelStay)=>{
+    if(!hotel.hotelName.trim()&&!trip.location.trim()){setHotelMessage(t("hotelSearchHint"));return;}
+    const suggestion=suggestHotelStay(hotel.hotelName,trip.location);
+    if(!suggestion){setHotelMessage(t("autoFillNoMatch"));return;}
+    updateHotel(hotel.id,{ hotelName:suggestion.hotelName||hotel.hotelName, hotelAddress:suggestion.hotelAddress||hotel.hotelAddress, roomType:suggestion.roomType||hotel.roomType, contact:suggestion.contact||hotel.contact });
+    setHotelMessage(t("hotelAutoFilled"));
+  };
+
   if(!isOwner){
     return <Card th={th} className="p-8 text-center">
       <p className={cx("text-lg",th==="dark"?"text-slate-400":"text-slate-500")}>
@@ -1668,11 +1725,19 @@ function TripSettings({trip,isOwner,th,t,onUpdate}:{trip:Trip;isOwner:boolean;th
           <Btn th={th} v="sec" type="button" onClick={addLeg}>+ {t("addLeg")}</Btn>
         </div>
         {form.flightLegs.length===0&&<p className={cx("text-sm",th==="dark"?"text-slate-400":"text-slate-500")}>{t("noFlightDetails")}</p>}
+        <p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("flightSearchHint")}</p>
+        {flightMessage&&<p className={cx("text-sm",th==="dark"?"text-cyan-300":"text-blue-700")}>{flightMessage}</p>}
         <div className="space-y-4">
           {form.flightLegs.map((leg,index)=><div key={leg.id} className={cx("rounded-3xl border p-5 space-y-4",th==="dark"?"border-white/8 bg-white/[0.03]":"border-slate-200 bg-slate-50")}>
             <div className="flex items-center justify-between gap-3">
-              <p className="font-semibold">{t("flightDetails")} {index+1}</p>
-              <Btn th={th} v="danger" sz="sm" type="button" onClick={()=>removeLeg(leg.id)}>{t("remove")}</Btn>
+              <div className="space-y-1">
+                <p className="font-semibold">{t("flightDetails")} {index+1}</p>
+                <p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("autoSearchFlight")}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Btn th={th} v="sec" sz="sm" type="button" onClick={()=>autofillFlight(leg)}>{t("search")}</Btn>
+                <Btn th={th} v="danger" sz="sm" type="button" onClick={()=>removeLeg(leg.id)}>{t("remove")}</Btn>
+              </div>
             </div>
             <div className="grid sm:grid-cols-2 gap-3">
               <Input th={th} label={t("airline")} value={leg.airline} onChange={e=>updateLeg(leg.id,{airline:e.target.value})}/>
@@ -1697,11 +1762,19 @@ function TripSettings({trip,isOwner,th,t,onUpdate}:{trip:Trip;isOwner:boolean;th
           <Btn th={th} v="sec" type="button" onClick={addHotel}>+ {t("addHotel")}</Btn>
         </div>
         {form.hotels.length===0&&<p className={cx("text-sm",th==="dark"?"text-slate-400":"text-slate-500")}>{t("noHotelDetails")}</p>}
+        <p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("hotelSearchHint")}</p>
+        {hotelMessage&&<p className={cx("text-sm",th==="dark"?"text-cyan-300":"text-blue-700")}>{hotelMessage}</p>}
         <div className="space-y-4">
           {form.hotels.map((hotel,index)=><div key={hotel.id} className={cx("rounded-3xl border p-5 space-y-4",th==="dark"?"border-white/8 bg-white/[0.03]":"border-slate-200 bg-slate-50")}>
             <div className="flex items-center justify-between gap-3">
-              <p className="font-semibold">{t("hotelDetails")} {index+1}</p>
-              <Btn th={th} v="danger" sz="sm" type="button" onClick={()=>removeHotel(hotel.id)}>{t("remove")}</Btn>
+              <div className="space-y-1">
+                <p className="font-semibold">{t("hotelDetails")} {index+1}</p>
+                <p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("autoFillHotel")}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Btn th={th} v="sec" sz="sm" type="button" onClick={()=>autofillHotel(hotel)}>{t("search")}</Btn>
+                <Btn th={th} v="danger" sz="sm" type="button" onClick={()=>removeHotel(hotel.id)}>{t("remove")}</Btn>
+              </div>
             </div>
             <div className="grid sm:grid-cols-2 gap-3">
               <Input th={th} label={t("hotelName")} value={hotel.hotelName} onChange={e=>updateHotel(hotel.id,{hotelName:e.target.value})}/>
@@ -1994,8 +2067,10 @@ export function App(){
   };
 
   const handleSignUp=(d:Omit<Profile,"id">)=>{
-    if(profiles.some(p=>p.email.toLowerCase()===d.email.trim().toLowerCase()))return{ok:false,message:t("accountExists")};
+    if(profiles.some(p=>p.email.toLowerCase()===d.email.trim().toLowerCase()))return{ok:false,message:t("emailExists")};
+    if(profiles.some(p=>p.phone.trim()===d.phone.trim()))return{ok:false,message:t("phoneExists")};
     if(profiles.some(p=>p.accountName.toLowerCase()===d.accountName.trim().toLowerCase()))return{ok:false,message:t("accountExists")};
+    if(!meetsPasswordPolicy(d.password))return{ok:false,message:t("passwordPolicy")};
     const p:Profile={...d,id:uid("u")};setProfiles(c=>[...c,p]);setUserId(p.id);return{ok:true,message:"OK"};
   };
 
