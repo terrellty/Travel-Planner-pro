@@ -79,7 +79,7 @@ type WeatherData = {
 
 type GeoPoint = { name: string; lat: number; lon: number };
 
-type WeatherApiSettings = { providerName: string; geocodeUrl: string; forecastUrl: string; flightLookupUrl: string; hotelLookupUrl: string; };
+type WeatherApiSettings = { providerName: string; geocodeUrl: string; forecastUrl: string; };
 type SiteSettings = {
   siteName: string; description: string; weatherApi: WeatherApiSettings;
   luggageCategories: LuggageCategory[];
@@ -135,8 +135,6 @@ const defaultSiteSettings: SiteSettings = {
     providerName:"Open-Meteo",
     geocodeUrl:"https://geocoding-api.open-meteo.com/v1/search?name={query}&count=1&language=en&format=json",
     forecastUrl:"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,weather_code&forecast_days=7&timezone=auto",
-    flightLookupUrl:"https://api.adsbdb.com/v0/callsign/{flightNumber}",
-    hotelLookupUrl:"https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=hotel%20{query}",
   },
   luggageCategories: defaultLuggageCats,
 };
@@ -248,8 +246,6 @@ function normSite(i:unknown):SiteSettings{
       providerName:s.weatherApi?.providerName??defaultSiteSettings.weatherApi.providerName,
       geocodeUrl:s.weatherApi?.geocodeUrl??defaultSiteSettings.weatherApi.geocodeUrl,
       forecastUrl:s.weatherApi?.forecastUrl??defaultSiteSettings.weatherApi.forecastUrl,
-      flightLookupUrl:s.weatherApi?.flightLookupUrl??defaultSiteSettings.weatherApi.flightLookupUrl,
-      hotelLookupUrl:s.weatherApi?.hotelLookupUrl??defaultSiteSettings.weatherApi.hotelLookupUrl,
     },
     luggageCategories:Array.isArray(s.luggageCategories)&&s.luggageCategories.length>0?s.luggageCategories:defaultLuggageCats,
   };
@@ -902,7 +898,7 @@ function TripDetail({trip,user,profiles,siteCfg,th,t,onBack,onUpdate,onAddExp,on
     {tab==="itinerary"&&<TripItinerary trip={trip} th={th} t={t} onUpdate={onUpdateItin}/>}
     {tab==="expenses"&&<TripExpenses trip={trip} user={user} profiles={profiles} th={th} t={t} onAdd={onAddExp} onRemove={onRemoveExp}/>}
     {tab==="luggage"&&<TripLuggage trip={trip} siteCfg={siteCfg} th={th} t={t} onAdd={onAddPack} onToggle={onTogglePack} onRemove={onRemovePack}/>}
-    {tab==="settings"&&<TripSettings trip={trip} isOwner={isOwner} siteCfg={siteCfg} th={th} t={t} onUpdate={onUpdate}/>}
+    {tab==="settings"&&<TripSettings trip={trip} isOwner={isOwner} th={th} t={t} onUpdate={onUpdate}/>}
   </div>;
 }
 
@@ -1333,9 +1329,9 @@ function TripItinerary({trip,th,t,onUpdate}:{trip:Trip;th:ThemeMode;t:(k:TKey)=>
       <Card th={th} className="p-8">
         <div className="mb-6 flex items-center gap-2 overflow-x-auto pb-2">
           {Array.from({length:trip.duration},(_,i)=>i+1).map(d=><button key={d} onClick={()=>setDay(d)}
-            className={cx("rounded-2xl px-4 py-2.5 font-medium whitespace-nowrap transition border",
-              d===day?(th==="dark"?"bg-cyan-400 text-slate-950 border-cyan-300":"bg-slate-800 text-white border-slate-700")
-                :(th==="dark"?"bg-white/5 text-slate-400 hover:bg-white/10 border-white/10":"bg-slate-100 text-slate-600 hover:bg-slate-200 border-slate-200"))}>
+            className={cx("rounded-full px-4 py-2 font-medium whitespace-nowrap transition",
+              d===day?(th==="dark"?"bg-cyan-400 text-slate-950":"bg-slate-800 text-white")
+                :(th==="dark"?"bg-white/5 text-slate-400 hover:bg-white/10":"bg-slate-100 text-slate-600 hover:bg-slate-200"))}>
             {t("day")} {d}
           </button>)}
         </div>
@@ -1362,8 +1358,8 @@ function TripItinerary({trip,th,t,onUpdate}:{trip:Trip;th:ThemeMode;t:(k:TKey)=>
                   {it.photo&&<img src={it.photo} alt={it.title} className="mt-4 h-48 w-full rounded-2xl border border-white/10 object-cover"/>}
                 </div>
                 <div className="flex gap-2">
-                  <button onClick={()=>edit(it)} className={cx("rounded-full px-2.5 py-1 text-sm",th==="dark"?"bg-white/10 hover:bg-white/20":"bg-slate-100 hover:bg-slate-200")}>✏️</button>
-                  <button onClick={()=>remove(it.id)} className={cx("rounded-full px-2.5 py-1 text-sm text-rose-400",th==="dark"?"bg-rose-500/10 hover:bg-rose-500/20":"bg-rose-50 hover:bg-rose-100")}>✕</button>
+                  <button onClick={()=>edit(it)} className="text-lg opacity-60 hover:opacity-100">✏️</button>
+                  <button onClick={()=>remove(it.id)} className="text-lg opacity-60 hover:opacity-100">✕</button>
                 </div>
               </div>
             </Card>
@@ -1709,7 +1705,7 @@ function TripLuggage({trip,siteCfg,th,t,onAdd,onToggle,onRemove}:{trip:Trip;site
   </div>;
 }
 
-function TripSettings({trip,isOwner,siteCfg,th,t,onUpdate}:{trip:Trip;isOwner:boolean;siteCfg:SiteSettings;th:ThemeMode;t:(k:TKey)=>string;onUpdate:(id:string,d:Partial<Trip>)=>void}){
+function TripSettings({trip,isOwner,th,t,onUpdate}:{trip:Trip;isOwner:boolean;th:ThemeMode;t:(k:TKey)=>string;onUpdate:(id:string,d:Partial<Trip>)=>void}){
   const [form,setForm]=useState(()=>({...trip,bannerImageUrl:""}));
   const [saved,setSaved]=useState(false);
   const [flightMessage,setFlightMessage]=useState("");
@@ -1778,25 +1774,6 @@ function TripSettings({trip,isOwner,siteCfg,th,t,onUpdate}:{trip:Trip;isOwner:bo
 
   return <Card th={th} className="p-8 space-y-6">
     <h2 className="text-2xl font-bold">{t("tripDetails")}</h2>
-    <Card th={th} className="p-6 space-y-4">
-      <h3 className="text-xl font-semibold">{t("quickSearch")}</h3>
-      <div className="grid lg:grid-cols-2 gap-4">
-        <div className={cx("rounded-2xl p-4 space-y-3",th==="dark"?"bg-white/[0.03]":"bg-slate-50")}>
-          <p className={cx("text-sm font-medium",th==="dark"?"text-slate-300":"text-slate-700")}>{t("quickFlightSearch")}</p>
-          <div className="flex gap-2">
-            <Input th={th} value={quickFlightNumber} onChange={e=>setQuickFlightNumber(e.target.value)} placeholder={t("flightNumber")} className="flex-1"/>
-            <Btn th={th} v="sec" sz="sm" type="button" onClick={()=>void quickSearchFlight()} disabled={Boolean(flightSearchingId)}>{flightSearchingId?t("loading"):t("search")}</Btn>
-          </div>
-        </div>
-        <div className={cx("rounded-2xl p-4 space-y-3",th==="dark"?"bg-white/[0.03]":"bg-slate-50")}>
-          <p className={cx("text-sm font-medium",th==="dark"?"text-slate-300":"text-slate-700")}>{t("quickHotelSearch")}</p>
-          <div className="flex gap-2">
-            <Input th={th} value={quickHotelQuery} onChange={e=>setQuickHotelQuery(e.target.value)} placeholder={t("hotelName")} className="flex-1"/>
-            <Btn th={th} v="sec" sz="sm" type="button" onClick={()=>void quickSearchHotel()} disabled={Boolean(hotelSearchingId)}>{hotelSearchingId?t("loading"):t("search")}</Btn>
-          </div>
-        </div>
-      </div>
-    </Card>
     <div className="space-y-6">
       <Card th={th} className="p-6 space-y-4">
         <div className="flex items-center justify-between gap-3">
@@ -2092,15 +2069,6 @@ function AdminWebsite({th,t,settings,onSave}:{th:ThemeMode;t:(k:TKey)=>string;se
       <Input th={th} label={t("providerName")} value={form.weatherApi.providerName} onChange={e=>setForm(f=>({...f,weatherApi:{...f.weatherApi,providerName:e.target.value}}))}/>
       <Input th={th} label={t("geocodeUrl")} value={form.weatherApi.geocodeUrl} onChange={e=>setForm(f=>({...f,weatherApi:{...f.weatherApi,geocodeUrl:e.target.value}}))}/>
       <Input th={th} label={t("forecastUrl")} value={form.weatherApi.forecastUrl} onChange={e=>setForm(f=>({...f,weatherApi:{...f.weatherApi,forecastUrl:e.target.value}}))}/>
-    </Card>
-
-    <Card th={th} className="p-6 space-y-4">
-      <h3 className="font-semibold text-xl">🔎 {t("lookupApi")}</h3>
-      <div className={cx("rounded-2xl p-5 border space-y-2 leading-relaxed",th==="dark"?"border-cyan-400/20 bg-cyan-400/5 text-cyan-300":"border-blue-200 bg-blue-50 text-blue-800")}>
-        <p>4. {t("apiHelp4")}</p><p>5. {t("apiHelp5")}</p><p>6. {t("apiHelp6")}</p>
-      </div>
-      <Input th={th} label={t("flightLookupUrl")} value={form.weatherApi.flightLookupUrl} onChange={e=>setForm(f=>({...f,weatherApi:{...f.weatherApi,flightLookupUrl:e.target.value}}))}/>
-      <Input th={th} label={t("hotelLookupUrl")} value={form.weatherApi.hotelLookupUrl} onChange={e=>setForm(f=>({...f,weatherApi:{...f.weatherApi,hotelLookupUrl:e.target.value}}))}/>
     </Card>
     <div className="flex gap-2 items-center">
       <Btn th={th} type="submit">{t("save")}</Btn>
