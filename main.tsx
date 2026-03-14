@@ -52,8 +52,8 @@ type HotelStay = {
 type TransitLeg = { duration: string; details: string; };
 
 type ItineraryItem = {
-  id: string; day: number; order: number; time: string; title: string; stopLocation: string; transport: string; details: string;
-  photo?: string; transitToNext?: TransitLeg;
+  id: string; day: number; order: number; startTime: string; endTime: string; endDayOffset?: number; title: string; stopLocation: string; transport: string; details: string;
+  photo?: string; mapUrl?: string; transitToNext?: TransitLeg;
 };
 
 type Trip = {
@@ -91,7 +91,7 @@ type SiteSettings = {
    ═══════════════════════════════════════════════════════════════════════════════ */
 const CURRENCIES = ["USD","EUR","GBP","JPY","HKD","SGD","AUD","CNY","TWD","KRW","THB","MYR","CAD","CHF"];
 const EXPENSE_CATS = ["Food","Transport","Accommodation","Activities","Shopping","Other"];
-const ITINERARY_TRANSPORT_OPTIONS = ["Walk","Public Transit","Taxi","Rideshare","Rental Car","Bike","Train","Flight","Ferry","Other"];
+const ITINERARY_TRANSPORT_OPTIONS = ["Train","Bus","Flight","Taxi","Rental Car","Walk","Ferry","Other"];
 const weatherCodeMap: Record<number,string> = {
   0:"Clear sky",1:"Mostly clear",2:"Partly cloudy",3:"Overcast",
   45:"Fog",48:"Rime fog",51:"Light drizzle",53:"Drizzle",55:"Dense drizzle",
@@ -222,7 +222,17 @@ function normTrip(i:unknown):Trip{
     bannerColor:t.bannerColor??"#2563eb", bannerImage:t.bannerImage??"",
     members:Array.isArray(t.members)?t.members:[], expenses:Array.isArray(t.expenses)?t.expenses:[],
     packingList:Array.isArray(t.packingList)?t.packingList:[],
-    itinerary:rawItinerary.map((item,index)=>({ ...(item as ItineraryItem), order: typeof (item as ItineraryItem).order === "number" ? (item as ItineraryItem).order : index + 1, stopLocation: (item as ItineraryItem).stopLocation ?? "", photo: (item as ItineraryItem).photo ?? "", transitToNext: (item as ItineraryItem).transitToNext ?? { duration: "", details: "" } })),
+    itinerary:rawItinerary.map((item,index)=>({
+      ...(item as ItineraryItem),
+      order: typeof (item as ItineraryItem).order === "number" ? (item as ItineraryItem).order : index + 1,
+      startTime: (item as ItineraryItem).startTime ?? (item as {time?:string}).time ?? "",
+      endTime: (item as ItineraryItem).endTime ?? (item as {time?:string}).time ?? "",
+      endDayOffset: (item as ItineraryItem).endDayOffset ?? 0,
+      stopLocation: (item as ItineraryItem).stopLocation ?? "",
+      photo: (item as ItineraryItem).photo ?? "",
+      mapUrl: (item as ItineraryItem).mapUrl ?? "",
+      transitToNext: (item as ItineraryItem).transitToNext ?? { duration: "", details: "" },
+    })),
     createdAt:t.createdAt??new Date().toISOString(),
     customLocation:t.customLocation };
 }
@@ -440,6 +450,34 @@ function combineDateTime(date:string,time:string){
   return time ? `${date}T${time}` : date;
 }
 
+function estimateDurationByDistanceKm(distanceKm:number,transport:string){
+  const speeds:Record<string,number>={"Walk":5,"Bus":28,"Train":80,"Taxi":35,"Rental Car":45,"Flight":700,"Ferry":30,"Other":25};
+  const speed=speeds[transport]??25;
+  const hours=distanceKm/Math.max(1,speed);
+  const mins=Math.max(10,Math.round(hours*60));
+  if(mins>=60){
+    const h=Math.floor(mins/60);
+    const m=mins%60;
+    return `${h}h${m?` ${m}m`:""}`;
+  }
+  return `${mins} min`;
+}
+
+function haversineKm(a:{lat:number;lon:number},b:{lat:number;lon:number}){
+  const toRad=(v:number)=>v*Math.PI/180;
+  const r=6371;
+  const dLat=toRad(b.lat-a.lat);
+  const dLon=toRad(b.lon-a.lon);
+  const aa=Math.sin(dLat/2)**2+Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*Math.sin(dLon/2)**2;
+  return r*2*Math.atan2(Math.sqrt(aa),Math.sqrt(1-aa));
+}
+
+function googleMapEmbedUrl(location:string){
+  const q=encodeURIComponent(location.trim());
+  if(!q)return "";
+  return `https://www.google.com/maps?q=${q}&output=embed`;
+}
+
 function addFlightLegsToItinerary(base:ItineraryItem[], flightLegs:FlightLeg[], tripStartDate:string){
   const nonFlightItems=base.filter(item=>!(item.transport==="Flight"&&item.id.startsWith("flt-itin-")));
   const dayFromDateTime=(dateTime:string)=>{
@@ -456,12 +494,18 @@ function addFlightLegsToItinerary(base:ItineraryItem[], flightLegs:FlightLeg[], 
     const dep=leg.departureAirport||"—";
     const arr=leg.arrivalAirport||"—";
     const flightLabel=[leg.airline,leg.flightNumber].filter(Boolean).join(" ")||`Flight ${index+1}`;
-    const when=toTimeInput(leg.departureTime)||"";
+    const depTime=toTimeInput(leg.departureTime)||"";
+    const arrTime=toTimeInput(leg.arrivalTime)||depTime;
+    const depDate=toDateInput(leg.departureTime||"");
+    const arrDate=toDateInput(leg.arrivalTime||"");
+    const endDayOffset=depDate&&arrDate?Math.max(0,Math.floor((new Date(`${arrDate}T00:00:00`).getTime()-new Date(`${depDate}T00:00:00`).getTime())/(1000*60*60*24))):0;
     return {
       id:`flt-itin-${leg.id}`,
       day: dayFromDateTime(leg.departureTime || leg.arrivalTime),
       order: 0,
-      time:when,
+      startTime:depTime,
+      endTime:arrTime,
+      endDayOffset,
       title:flightLabel,
       stopLocation:`${dep} -> ${arr}`,
       transport:"Flight",
@@ -472,6 +516,7 @@ function addFlightLegsToItinerary(base:ItineraryItem[], flightLegs:FlightLeg[], 
         leg.bookingReference?`Booking: ${leg.bookingReference}`:"",
       ].filter(Boolean).join(" • "),
       photo:"",
+      mapUrl: googleMapEmbedUrl(`${dep} ${arr}`),
       transitToNext:{duration:"",details:""},
     } as ItineraryItem;
   });
@@ -484,7 +529,7 @@ function addFlightLegsToItinerary(base:ItineraryItem[], flightLegs:FlightLeg[], 
     byDay.set(key,list);
   }
   return [...combined].map(item=>{
-    const sameDay=(byDay.get(item.day||1)??[]).slice().sort((a,b)=>a.time.localeCompare(b.time)||a.title.localeCompare(b.title));
+    const sameDay=(byDay.get(item.day||1)??[]).slice().sort((a,b)=>a.startTime.localeCompare(b.startTime)||a.title.localeCompare(b.title));
     const idx=sameDay.findIndex(x=>x.id===item.id);
     return {...item,order:idx>=0?idx+1:item.order};
   });
@@ -1343,7 +1388,7 @@ function TripTravelers({trip,profiles,th,t}:{trip:Trip;profiles:Profile[];th:The
 }
 
 function TripItinerary({trip,th,t,onUpdate}:{trip:Trip;th:ThemeMode;t:(k:TKey)=>string;onUpdate:(tid:string,items:ItineraryItem[])=>void}){
-  const emptyForm={time:"09:00",title:"",stopLocation:"",transport:"Walk",details:"",photo:""};
+  const emptyForm={startTime:"09:00",endTime:"10:00",endDayOffset:0,title:"",stopLocation:"",transport:"Walk",details:"",photo:"",mapUrl:""};
   const [day,setDay]=useState(1);
   const [form,setForm]=useState(emptyForm);
   const [editId,setEditId]=useState<string|null>(null);
@@ -1354,41 +1399,103 @@ function TripItinerary({trip,th,t,onUpdate}:{trip:Trip;th:ThemeMode;t:(k:TKey)=>
   const nextOrder=(trip.itinerary.filter(it=>it.day===day).reduce((max,it)=>Math.max(max,it.order),0))+1;
   const totalItems=trip.itinerary.length;
   const photoCount=trip.itinerary.filter(it=>Boolean(it.photo)).length;
-  const dayPhotoCount=dayItems.filter(it=>Boolean(it.photo)).length;
 
-  const saveActivity=(e:React.FormEvent)=>{
+  const shouldKeepManualTransit=(transit?:TransitLeg)=>{
+    if(!transit?.duration&&!transit?.details) return false;
+    const details=(transit.details||"").toLowerCase();
+    return !details.startsWith("auto •");
+  };
+
+  const autoFillTransit=async(items:ItineraryItem[])=>{
+    if(items.length<2) return items;
+    const ordered=items.slice().sort((a,b)=>a.order-b.order);
+    const withTransit=[...ordered];
+
+    for(let i=0;i<withTransit.length;i++){
+      if(i===withTransit.length-1){
+        withTransit[i]={...withTransit[i],transitToNext:{duration:"",details:""}};
+        continue;
+      }
+      const cur=withTransit[i];
+      const nxt=withTransit[i+1];
+      if(shouldKeepManualTransit(cur.transitToNext)) continue;
+      if(!cur.stopLocation||!nxt.stopLocation) continue;
+      try{
+        const [aRes,bRes]=await Promise.all([
+          fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(cur.stopLocation)}`),
+          fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(nxt.stopLocation)}`),
+        ]);
+        const [aJson,bJson]=await Promise.all([aRes.json(),bRes.json()]);
+        const a=Array.isArray(aJson)&&aJson[0]?{lat:Number(aJson[0].lat),lon:Number(aJson[0].lon)}:null;
+        const b=Array.isArray(bJson)&&bJson[0]?{lat:Number(bJson[0].lat),lon:Number(bJson[0].lon)}:null;
+        if(a&&b){
+          const dist=haversineKm(a,b);
+          withTransit[i]={...cur,transitToNext:{duration:estimateDurationByDistanceKm(dist,cur.transport),details:`Auto • Approx. ${dist.toFixed(1)} km`}};
+        }
+      }catch{}
+    }
+    return withTransit;
+  };
+
+  const persistWithAutoTransit=async(nextItems:ItineraryItem[],targetDay:number)=>{
+    const dayUpdated=nextItems.filter(it=>it.day===targetDay);
+    const autoDay=await autoFillTransit(dayUpdated);
+    const map=new Map(autoDay.map(it=>[it.id,it]));
+    onUpdate(trip.id,nextItems.map(it=>it.day===targetDay?(map.get(it.id)??it):it));
+  };
+
+  const saveActivity=async(e:React.FormEvent)=>{
     e.preventDefault();
     if(!form.title.trim())return;
-    const payload={ time:form.time,title:form.title,stopLocation:form.stopLocation,transport:form.transport,details:form.details,photo:form.photo };
-    if(editId){
-      onUpdate(trip.id,trip.itinerary.map(it=>it.id===editId?{...it,...payload,day}:it));
-      setEditId(null);
-    }else{
-      onUpdate(trip.id,[...trip.itinerary,{id:uid("it"),day,order:nextOrder,...payload,transitToNext:{duration:"",details:""}}]);
-    }
+    const payload={
+      startTime:form.startTime,
+      endTime:form.endTime,
+      endDayOffset:form.endDayOffset,
+      title:form.title,
+      stopLocation:form.stopLocation,
+      transport:form.transport,
+      details:form.details,
+      photo:form.photo,
+      mapUrl:form.mapUrl||googleMapEmbedUrl(form.stopLocation),
+    };
+    const next=editId
+      ? trip.itinerary.map(it=>it.id===editId?{...it,...payload,day}:it)
+      : [...trip.itinerary,{id:uid("it"),day,order:nextOrder,...payload,transitToNext:{duration:"",details:""}}];
+    await persistWithAutoTransit(next,day);
+    setEditId(null);
     setForm(emptyForm);
   };
 
-  const move=(idx:number,dir:1|-1)=>{
+  const move=async(idx:number,dir:1|-1)=>{
     const swapWith=idx+dir;
     if(swapWith<0||swapWith>=dayItems.length)return;
     const reordered=[...dayItems];
     [reordered[idx],reordered[swapWith]]=[reordered[swapWith],reordered[idx]];
     const orderMap=new Map(reordered.map((item,index)=>[item.id,index+1]));
-    onUpdate(trip.id,trip.itinerary.map(it=>it.day===day?{...it,order:orderMap.get(it.id)??it.order}:it));
+    const next=trip.itinerary.map(it=>it.day===day?{...it,order:orderMap.get(it.id)??it.order}:it);
+    await persistWithAutoTransit(next,day);
   };
 
-  const remove=(id:string)=>{
+  const remove=async(id:string)=>{
     const remaining=trip.itinerary.filter(it=>it.id!==id);
     const remainingDay=remaining.filter(it=>it.day===day).sort((a,b)=>a.order-b.order);
     const orderMap=new Map(remainingDay.map((item,index)=>[item.id,index+1]));
-    onUpdate(trip.id,remaining.map(it=>it.day===day?{...it,order:orderMap.get(it.id)??it.order}:it));
+    const next=remaining.map(it=>it.day===day?{...it,order:orderMap.get(it.id)??it.order}:it);
+    await persistWithAutoTransit(next,day);
   };
 
   const edit=(it:ItineraryItem)=>{
-    setForm({ time:it.time,title:it.title,stopLocation:it.stopLocation ?? "",transport:it.transport,details:it.details,photo:it.photo??"" });
+    setForm({ startTime:it.startTime,endTime:it.endTime,endDayOffset:it.endDayOffset??0,title:it.title,stopLocation:it.stopLocation ?? "",transport:it.transport,details:it.details,photo:it.photo??"",mapUrl:it.mapUrl??"" });
     setEditId(it.id);
     setDay(it.day);
+  };
+
+  const handlePhotoUpload=async(e:ChangeEvent<HTMLInputElement>)=>{
+    const file=e.target.files?.[0];
+    if(!file)return;
+    const photo=await readFile(file);
+    setForm(f=>({...f,photo}));
+    e.target.value="";
   };
 
   const startTransportEdit=(it:ItineraryItem)=>{
@@ -1408,14 +1515,6 @@ function TripItinerary({trip,th,t,onUpdate}:{trip:Trip;th:ThemeMode;t:(k:TKey)=>
     setTransportForm({duration:"",details:""});
   };
 
-  const handlePhotoUpload=async(e:ChangeEvent<HTMLInputElement>)=>{
-    const file=e.target.files?.[0];
-    if(!file)return;
-    const photo=await readFile(file);
-    setForm(f=>({...f,photo}));
-    e.target.value="";
-  };
-
   return <div className="grid gap-6 lg:grid-cols-[1.45fr_.95fr]">
     <div className="space-y-5">
       <Card th={th} className="p-5 space-y-4">
@@ -1424,99 +1523,65 @@ function TripItinerary({trip,th,t,onUpdate}:{trip:Trip;th:ThemeMode;t:(k:TKey)=>
           <div className={cx("rounded-2xl p-4",th==="dark"?"bg-white/[0.04]":"bg-slate-100")}><p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("day")}</p><p className="mt-1 text-2xl font-bold">{day}/{trip.duration}</p></div>
           <div className={cx("rounded-2xl p-4",th==="dark"?"bg-white/[0.04]":"bg-slate-100")}><p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("itineraryPhoto")}</p><p className="mt-1 text-2xl font-bold">{photoCount}</p></div>
         </div>
-        <div>
-          <div className="mb-2 flex items-center justify-between text-sm">
-            <p className={cx(th==="dark"?"text-slate-300":"text-slate-700")}>{t("day")} {day}</p>
-            <p className={cx(th==="dark"?"text-slate-400":"text-slate-500")}>{dayItems.length} items · {dayPhotoCount} photos</p>
-          </div>
-          <div className={cx("h-2 overflow-hidden rounded-full",th==="dark"?"bg-white/10":"bg-slate-200")}>
-            <div className={cx("h-full rounded-full",th==="dark"?"bg-cyan-300":"bg-blue-600")} style={{width:`${Math.min(100,Math.max(8,(day/trip.duration)*100))}%`}}/>
-          </div>
-        </div>
       </Card>
+
       <Card th={th} className="p-8">
         <div className="mb-6 flex items-center gap-2 overflow-x-auto pb-2">
-          {Array.from({length:trip.duration},(_,i)=>i+1).map(d=><button key={d} onClick={()=>setDay(d)}
-            className={cx("rounded-2xl px-4 py-2.5 font-medium whitespace-nowrap transition border",
-              d===day?(th==="dark"?"bg-cyan-400 text-slate-950 border-cyan-300":"bg-slate-800 text-white border-slate-700")
-                :(th==="dark"?"bg-white/5 text-slate-400 hover:bg-white/10 border-white/10":"bg-slate-100 text-slate-600 hover:bg-slate-200 border-slate-200"))}>
-            {t("day")} {d}
-          </button>)}
+          {Array.from({length:trip.duration},(_,i)=>i+1).map(d=><button key={d} onClick={()=>setDay(d)} className={cx("rounded-2xl px-4 py-2.5 font-medium whitespace-nowrap transition border",d===day?(th==="dark"?"bg-cyan-400 text-slate-950 border-cyan-300":"bg-slate-800 text-white border-slate-700"):(th==="dark"?"bg-white/5 text-slate-400 hover:bg-white/10 border-white/10":"bg-slate-100 text-slate-600 hover:bg-slate-200 border-slate-200"))}>{t("day")} {d}</button>)}
         </div>
-        {dayItems.length===0?<Empty icon="🗓️" title={t("noItinerary")} desc={t("noItineraryDesc")} th={th}/>
-        :<div className="space-y-5">
-          {dayItems.map((it,idx)=><div key={it.id} className="space-y-3 relative">
-            {idx<dayItems.length-1&&<span className={cx("absolute left-[18px] top-14 h-[calc(100%-1.2rem)] w-px",th==="dark"?"bg-white/10":"bg-slate-200")}/>}
-            <Card th={th} className="p-5 rounded-3xl">
-              <div className="flex items-start gap-4">
-                <div className="flex flex-col gap-1">
-                  <button onClick={()=>move(idx,-1)} disabled={idx===0} className="text-lg opacity-60 hover:opacity-100 disabled:opacity-20">▲</button>
-                  <button onClick={()=>move(idx,1)} disabled={idx===dayItems.length-1} className="text-lg opacity-60 hover:opacity-100 disabled:opacity-20">▼</button>
-                </div>
-                <div className="flex-1">
-                  <div className="mb-2 flex items-start justify-between gap-3">
-                    <div>
-                      <p className={cx("text-sm font-mono",th==="dark"?"text-cyan-400":"text-blue-600")}>{it.time}</p>
-                      <p className="text-lg font-bold">{it.title}</p>
-                    </div>
-                    <Badge label={it.transport} th={th}/>
-                  </div>
-                  {it.stopLocation&&<p className={cx("mb-2 text-sm",th==="dark"?"text-cyan-300":"text-blue-700")}>📍 {it.stopLocation}</p>}
-                  {it.details&&<p className={cx("text-sm leading-6",th==="dark"?"text-slate-400":"text-slate-500")}>{it.details}</p>}
-                  {it.photo&&<img src={it.photo} alt={it.title} className="mt-4 h-48 w-full rounded-2xl border border-white/10 object-cover"/>}
-                </div>
-                <div className="flex gap-2">
-                  <button onClick={()=>edit(it)} className={cx("rounded-full px-2.5 py-1 text-sm",th==="dark"?"bg-white/10 hover:bg-white/20":"bg-slate-100 hover:bg-slate-200")}>✏️</button>
-                  <button onClick={()=>remove(it.id)} className={cx("rounded-full px-2.5 py-1 text-sm text-rose-400",th==="dark"?"bg-rose-500/10 hover:bg-rose-500/20":"bg-rose-50 hover:bg-rose-100")}>✕</button>
-                </div>
-              </div>
-            </Card>
 
-            {idx<dayItems.length-1&&<div className={cx("ml-11 rounded-2xl border border-dashed px-5 py-4",th==="dark"?"border-cyan-400/20 bg-cyan-400/5":"border-blue-200 bg-blue-50")}>
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="font-semibold">{t("betweenStops")}</p>
-                  <p className={cx("text-sm mt-1",th==="dark"?"text-slate-400":"text-slate-500")}>{it.title}{" -> "}{dayItems[idx+1]?.title}</p>
-                </div>
-                <div className="flex gap-2">
-                  <Btn th={th} v="sec" sz="sm" onClick={()=>startTransportEdit(it)}>{it.transitToNext?.duration||it.transitToNext?.details?t("editTransportDetail"):t("addTransportDetail")}</Btn>
+        {dayItems.length===0?<Empty icon="🗓️" title={t("noItinerary")} desc={t("noItineraryDesc")} th={th}/>:<div className="space-y-5">{dayItems.map((it,idx)=><div key={it.id} className="space-y-3 relative">
+          {idx<dayItems.length-1&&<span className={cx("absolute left-[18px] top-14 h-[calc(100%-1.2rem)] w-px",th==="dark"?"bg-white/10":"bg-slate-200")}/>}<Card th={th} className={cx("p-5 rounded-3xl",it.transport==="Flight"?(th==="dark"?"bg-indigo-500/10 border-indigo-400/40":"bg-indigo-50 border-indigo-200"):"")}>
+            <div className="flex items-start gap-4">
+              <div className="flex flex-col gap-1"><button onClick={()=>move(idx,-1)} disabled={idx===0} className="text-lg opacity-60 hover:opacity-100 disabled:opacity-20">▲</button><button onClick={()=>move(idx,1)} disabled={idx===dayItems.length-1} className="text-lg opacity-60 hover:opacity-100 disabled:opacity-20">▼</button></div>
+              <div className="flex-1">
+                <div className="mb-2 flex items-start justify-between gap-3"><div><p className={cx("text-sm font-mono",th==="dark"?"text-cyan-400":"text-blue-600")}>{it.startTime} - {it.endTime}{(it.endDayOffset??0)>0?` (+${it.endDayOffset}d)`:""}</p><p className="text-lg font-bold">{it.title}</p></div><Badge label={it.transport} th={th}/></div>
+                {it.stopLocation&&<p className={cx("mb-2 text-sm",th==="dark"?"text-cyan-300":"text-blue-700")}>📍 {it.stopLocation}</p>}
+                {it.details&&<p className={cx("text-sm leading-6",th==="dark"?"text-slate-400":"text-slate-500")}>{it.details}</p>}
+
+                {(it.transitToNext?.duration||it.transitToNext?.details)&&<div className={cx("mt-3 rounded-xl border border-dashed px-3 py-2",th==="dark"?"border-white/20":"border-slate-300")}>
+                  <p className="text-xs font-semibold uppercase">{t("transitTime")}</p>
+                  {it.transitToNext?.duration&&<Badge label={it.transitToNext.duration} th={th} color="amber"/>}
+                  {it.transitToNext?.details&&<p className="text-sm mt-1">{it.transitToNext.details}</p>}
+                </div>}
+
+                <div className="mt-2 flex gap-2">
+                  <Btn th={th} v="sec" sz="sm" onClick={()=>startTransportEdit(it)}>{t("editTransportDetail")}</Btn>
                   {(it.transitToNext?.duration||it.transitToNext?.details)&&<Btn th={th} v="ghost" sz="sm" onClick={()=>clearTransport(it.id)}>{t("clearTransportDetail")}</Btn>}
                 </div>
+
+                {transportEditId===it.id&&<div className="mt-3 space-y-2">
+                  <Input th={th} label={t("transitTime")} value={transportForm.duration} onChange={e=>setTransportForm(f=>({...f,duration:e.target.value}))}/>
+                  <Textarea th={th} label={t("transitDetails")} value={transportForm.details} onChange={e=>setTransportForm(f=>({...f,details:e.target.value}))}/>
+                  <div className="flex gap-2"><Btn th={th} sz="sm" onClick={()=>saveTransport(it.id)}>{t("save")}</Btn><Btn th={th} v="sec" sz="sm" onClick={()=>setTransportEditId(null)}>{t("cancel")}</Btn></div>
+                </div>}
+
+                {it.mapUrl&&<iframe src={it.mapUrl} title={`${it.title}-map`} loading="lazy" className="mt-3 h-40 w-full rounded-2xl border border-white/10"/>}
+                {it.photo&&<img src={it.photo} alt={it.title} className="mt-4 h-32 w-full rounded-2xl border border-white/10 object-cover"/>}
               </div>
-              {(it.transitToNext?.duration||it.transitToNext?.details)&&transportEditId!==it.id&&<div className="mt-3 space-y-2">
-                {it.transitToNext?.duration&&<Badge label={it.transitToNext.duration} th={th} color="amber"/>}
-                {it.transitToNext?.details&&<p className={cx("text-sm",th==="dark"?"text-slate-300":"text-slate-600")}>{it.transitToNext.details}</p>}
-              </div>}
-              {transportEditId===it.id&&<div className="mt-4 space-y-3">
-                <Input th={th} label={t("transitTime")} value={transportForm.duration} onChange={e=>setTransportForm(f=>({...f,duration:e.target.value}))} placeholder="45 min"/>
-                <Textarea th={th} label={t("transitDetails")} value={transportForm.details} onChange={e=>setTransportForm(f=>({...f,details:e.target.value}))}/>
-                <div className="flex gap-2">
-                  <Btn th={th} sz="sm" onClick={()=>saveTransport(it.id)}>{t("save")}</Btn>
-                  <Btn th={th} v="sec" sz="sm" onClick={()=>setTransportEditId(null)}>{t("cancel")}</Btn>
-                </div>
-              </div>}
-            </div>}
-          </div>)}
-        </div>}
+              <div className="flex gap-2"><button onClick={()=>edit(it)} className={cx("rounded-full px-2.5 py-1 text-sm",th==="dark"?"bg-white/10 hover:bg-white/20":"bg-slate-100 hover:bg-slate-200")}>✏️</button><button onClick={()=>remove(it.id)} className={cx("rounded-full px-2.5 py-1 text-sm text-rose-400",th==="dark"?"bg-rose-500/10 hover:bg-rose-500/20":"bg-rose-50 hover:bg-rose-100")}>✕</button></div>
+            </div>
+          </Card>
+        </div>)}</div>}
       </Card>
     </div>
 
     <Card th={th} className="p-6 h-fit lg:sticky lg:top-6">
       <h3 className="mb-4 text-xl font-bold">{editId?t("edit"):t("addActivity")}</h3>
       <form onSubmit={saveActivity} className="space-y-3">
-        <Input th={th} label={t("time")} type="time" value={form.time} onChange={e=>setForm(f=>({...f,time:e.target.value}))}/>
+        <Input th={th} label={t("startTime")} type="time" value={form.startTime} onChange={e=>setForm(f=>({...f,startTime:e.target.value}))}/>
+        <Input th={th} label={t("endTime")} type="time" value={form.endTime} onChange={e=>setForm(f=>({...f,endTime:e.target.value}))}/>
+        <Input th={th} label={t("endDayOffset")} type="number" min={0} value={form.endDayOffset} onChange={e=>setForm(f=>({...f,endDayOffset:Number(e.target.value)||0}))}/>
         <Input th={th} label={t("activity")} value={form.title} onChange={e=>setForm(f=>({...f,title:e.target.value}))}/>
-        <Input th={th} label={t("stopLocation")} value={form.stopLocation} onChange={e=>setForm(f=>({...f,stopLocation:e.target.value}))}/>
-        <Select th={th} label={t("transport")} value={form.transport} onChange={e=>setForm(f=>({...f,transport:e.target.value}))}>
-          {ITINERARY_TRANSPORT_OPTIONS.map(option=><option key={option} value={option}>{option}</option>)}
-        </Select>
+        <Input th={th} label={t("stopLocation")} value={form.stopLocation} onChange={e=>setForm(f=>({...f,stopLocation:e.target.value,mapUrl:googleMapEmbedUrl(e.target.value)}))}/>
+        <Input th={th} label={t("googleMapUrl")} value={form.mapUrl} onChange={e=>setForm(f=>({...f,mapUrl:e.target.value}))}/>
+        {form.mapUrl&&<iframe src={form.mapUrl} title="activity-map-preview" loading="lazy" className="h-40 w-full rounded-2xl border border-white/10"/>}
+        <Select th={th} label={t("transport")} value={form.transport} onChange={e=>setForm(f=>({...f,transport:e.target.value}))}>{ITINERARY_TRANSPORT_OPTIONS.map(option=><option key={option} value={option}>{option}</option>)}</Select>
         <Textarea th={th} label={t("details")} value={form.details} onChange={e=>setForm(f=>({...f,details:e.target.value}))}/>
         <div className="space-y-2">
-          <label className={cx("file-label",th==="dark"?"bg-white/5 text-slate-300 hover:bg-white/10":"bg-slate-100 text-slate-700 hover:bg-slate-200")}>
-            🖼 {t("uploadPhoto")}<input type="file" accept="image/*" onChange={handlePhotoUpload}/>
-          </label>
+          <label className={cx("file-label",th==="dark"?"bg-white/5 text-slate-300 hover:bg-white/10":"bg-slate-100 text-slate-700 hover:bg-slate-200")}>🖼 {t("uploadPhoto")}<input type="file" accept="image/*" onChange={handlePhotoUpload}/></label>
           <Input th={th} label={t("photoUrl")} value={form.photo} onChange={e=>setForm(f=>({...f,photo:e.target.value}))}/>
-          {form.photo&&<img src={form.photo} alt="preview" className="h-32 w-full rounded-2xl border border-white/10 object-cover"/>}
+          {form.photo&&<img src={form.photo} alt="preview" className="h-24 w-full rounded-2xl border border-white/10 object-cover"/>}
         </div>
         <Btn th={th} type="submit">{editId?t("save"):t("add")}</Btn>
         {editId&&<Btn th={th} v="sec" type="button" onClick={()=>{setEditId(null);setForm(emptyForm);}}>{t("cancel")}</Btn>}
