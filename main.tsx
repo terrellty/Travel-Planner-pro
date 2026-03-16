@@ -163,6 +163,62 @@ function usePersist<T>(key:string,init:T){
   return [s,set] as const;
 }
 
+const CLOUD_ENDPOINT_KEY = "tp-cloud-worker-endpoint";
+const DEFAULT_CLOUD_WORKER_ENDPOINT = "https://travel-planner-worker-ai-storage.simpsonts-lee.workers.dev";
+const CLOUD_SHARED_KEYS = new Set([SK.profiles,SK.trips,SK.adminPw,SK.site]);
+
+function getCloudWorkerEndpoint(){
+  try{
+    const configured = localStorage.getItem(CLOUD_ENDPOINT_KEY)?.trim();
+    if(configured) return configured;
+    if(DEFAULT_CLOUD_WORKER_ENDPOINT){
+      localStorage.setItem(CLOUD_ENDPOINT_KEY,DEFAULT_CLOUD_WORKER_ENDPOINT);
+      return DEFAULT_CLOUD_WORKER_ENDPOINT;
+    }
+    return "";
+  }catch{
+    return DEFAULT_CLOUD_WORKER_ENDPOINT;
+  }
+}
+
+async function cloudStorageRequest(endpoint:string,action:string,key:string,value?:unknown){
+  const res = await fetch(endpoint,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:crypto.randomUUID(),action,key,value})});
+  const data = await res.json();
+  if(!res.ok||!data?.ok) throw new Error(data?.error??`Cloud storage request failed (${res.status})`);
+  return data?.data;
+}
+
+function useSharedPersist<T>(key:string,init:T){
+  const [s,set]=usePersist<T>(key,init);
+
+  useEffect(()=>{
+    if(!CLOUD_SHARED_KEYS.has(key)) return;
+    const endpoint=getCloudWorkerEndpoint();
+    if(!endpoint) return;
+    let cancelled=false;
+    (async()=>{
+      try{
+        const r=await cloudStorageRequest(endpoint,"get",key);
+        if(cancelled) return;
+        if(r?.exists) set(r.value as T);
+        else await cloudStorageRequest(endpoint,"set",key,s);
+      }catch{}
+    })();
+    return ()=>{cancelled=true;};
+    // run only once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[key]);
+
+  useEffect(()=>{
+    if(!CLOUD_SHARED_KEYS.has(key)) return;
+    const endpoint=getCloudWorkerEndpoint();
+    if(!endpoint) return;
+    cloudStorageRequest(endpoint,"set",key,s).catch(()=>{});
+  },[key,s]);
+
+  return [s,set] as const;
+}
+
 function useT(lang:Language){ return (k:TKey)=>translations[lang][k]; }
 
 function copyText(v:string){ navigator.clipboard?.writeText(v).catch(()=>{}); }
@@ -2361,12 +2417,12 @@ function AdminPasswordForm({th,t,onSave}:{th:ThemeMode;t:(k:TKey)=>string;onSave
 export function App(){
   const [theme,setTheme]=usePersist<ThemeMode>(SK.theme,"dark");
   const [lang,setLang]=usePersist<Language>(SK.lang,"en");
-  const [profiles,setProfiles]=usePersist<Profile[]>(SK.profiles,[]);
-  const [trips,setTrips]=usePersist<Trip[]>(SK.trips,[]);
-  const [adminPw,setAdminPw]=usePersist<string>(SK.adminPw,"");
+  const [profiles,setProfiles]=useSharedPersist<Profile[]>(SK.profiles,[]);
+  const [trips,setTrips]=useSharedPersist<Trip[]>(SK.trips,[]);
+  const [adminPw,setAdminPw]=useSharedPersist<string>(SK.adminPw,"");
   const [adminAuth,setAdminAuth]=usePersist<boolean>(SK.adminAuth,false);
   const [userId,setUserId]=usePersist<string>(SK.userId,"");
-  const [siteCfg,setSiteCfg]=usePersist<SiteSettings>(SK.site,defaultSiteSettings);
+  const [siteCfg,setSiteCfg]=useSharedPersist<SiteSettings>(SK.site,defaultSiteSettings);
   const [view,setView]=useState<ViewMode>("user");
   const [authMode,setAuthMode]=useState<"signin"|"signup">("signin");
   const [showAuth,setShowAuth]=useState(false);
