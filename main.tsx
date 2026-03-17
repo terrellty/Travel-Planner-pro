@@ -169,13 +169,11 @@ const CLOUD_SHARED_KEYS = new Set([SK.profiles,SK.trips,SK.adminPw,SK.site]);
 
 function getCloudWorkerEndpoint(){
   try{
-    const configured = localStorage.getItem(CLOUD_ENDPOINT_KEY)?.trim();
-    if(configured) return configured;
     if(DEFAULT_CLOUD_WORKER_ENDPOINT){
       localStorage.setItem(CLOUD_ENDPOINT_KEY,DEFAULT_CLOUD_WORKER_ENDPOINT);
       return DEFAULT_CLOUD_WORKER_ENDPOINT;
     }
-    return "";
+    return localStorage.getItem(CLOUD_ENDPOINT_KEY)?.trim() ?? "";
   }catch{
     return DEFAULT_CLOUD_WORKER_ENDPOINT;
   }
