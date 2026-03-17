@@ -188,31 +188,15 @@ async function cloudStorageRequest(endpoint:string,action:string,key:string,valu
 
 function useSharedPersist<T>(key:string,init:T){
   const [s,set]=usePersist<T>(key,init);
-  const stateRef = useRef(s);
-  const isCloudSyncReadyRef = useRef(!CLOUD_SHARED_KEYS.has(key));
-  const skipNextCloudPushRef = useRef(false);
-  const pendingCloudPushRef = useRef(false);
+  const [cloudReady,setCloudReady]=useState(!CLOUD_SHARED_KEYS.has(key) || !getCloudWorkerEndpoint());
 
   useEffect(()=>{ stateRef.current=s; },[s]);
 
   const pullFromCloud = useCallback(async()=>{
     if(!CLOUD_SHARED_KEYS.has(key)) return;
     const endpoint=getCloudWorkerEndpoint();
-    if(!endpoint) return;
-    try{
-      const r=await cloudStorageRequest(endpoint,"get",key);
-      if(r?.exists){
-        skipNextCloudPushRef.current=true;
-        set(r.value as T);
-      }
-    }catch{}
-  },[key,set]);
-
-  useEffect(()=>{
-    if(!CLOUD_SHARED_KEYS.has(key)) return;
-    const endpoint=getCloudWorkerEndpoint();
     if(!endpoint){
-      isCloudSyncReadyRef.current=true;
+      setCloudReady(true);
       return;
     }
     let cancelled=false;
@@ -227,12 +211,7 @@ function useSharedPersist<T>(key:string,init:T){
         }else await cloudStorageRequest(endpoint,"set",key,stateRef.current);
       }catch{}
       finally{
-        if(cancelled) return;
-        isCloudSyncReadyRef.current=true;
-        if(pendingCloudPushRef.current){
-          pendingCloudPushRef.current=false;
-          cloudStorageRequest(endpoint,"set",key,stateRef.current).catch(()=>{});
-        }
+        if(!cancelled) setCloudReady(true);
       }
     })();
 
@@ -262,8 +241,9 @@ function useSharedPersist<T>(key:string,init:T){
     }
     const endpoint=getCloudWorkerEndpoint();
     if(!endpoint) return;
+    if(!cloudReady) return;
     cloudStorageRequest(endpoint,"set",key,s).catch(()=>{});
-  },[key,s]);
+  },[cloudReady,key,s]);
 
   return [s,set] as const;
 }
