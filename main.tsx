@@ -191,6 +191,7 @@ function useSharedPersist<T>(key:string,init:T){
   const stateRef = useRef(s);
   const isCloudSyncReadyRef = useRef(!CLOUD_SHARED_KEYS.has(key));
   const skipNextCloudPushRef = useRef(false);
+  const pendingCloudPushRef = useRef(false);
 
   useEffect(()=>{ stateRef.current=s; },[s]);
 
@@ -225,7 +226,14 @@ function useSharedPersist<T>(key:string,init:T){
           set(r.value as T);
         }else await cloudStorageRequest(endpoint,"set",key,stateRef.current);
       }catch{}
-      finally{ if(!cancelled) isCloudSyncReadyRef.current=true; }
+      finally{
+        if(cancelled) return;
+        isCloudSyncReadyRef.current=true;
+        if(pendingCloudPushRef.current){
+          pendingCloudPushRef.current=false;
+          cloudStorageRequest(endpoint,"set",key,stateRef.current).catch(()=>{});
+        }
+      }
     })();
 
     const onFocus=()=>{ void pullFromCloud(); };
@@ -244,7 +252,10 @@ function useSharedPersist<T>(key:string,init:T){
 
   useEffect(()=>{
     if(!CLOUD_SHARED_KEYS.has(key)) return;
-    if(!isCloudSyncReadyRef.current) return;
+    if(!isCloudSyncReadyRef.current){
+      pendingCloudPushRef.current=true;
+      return;
+    }
     if(skipNextCloudPushRef.current){
       skipNextCloudPushRef.current=false;
       return;
