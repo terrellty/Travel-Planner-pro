@@ -1,10 +1,11 @@
 # Cloudflare Worker + GitHub Actions (Option 2) Setup
 
-This guide links your GitHub repo to Cloudflare Worker deployments using `wrangler` in GitHub Actions.
+This guide links your GitHub repo to Cloudflare Worker deployments using `wrangler` in GitHub Actions and configures the app to use a Worker endpoint from an environment file.
 
 ## What was added
 - `wrangler.toml` (Worker config)
 - `.github/workflows/deploy-worker.yml` (auto deploy workflow)
+- `.env.example` (frontend Worker URL config template)
 
 ## 1) Confirm your default deploy branch
 This workflow deploys when pushing to `main`.
@@ -35,70 +36,15 @@ GitHub repo → **Settings** → **Secrets and variables** → **Actions** → *
 - `CLOUDFLARE_API_TOKEN` = (token from step 2)
 - `CLOUDFLARE_ACCOUNT_ID` = (account id from step 3)
 
-## 5) Push changes to trigger deploy
-Push commits to the configured branch (`main` by default).
+## 5) Configure KV binding (required for shared account/trip data)
+1. Cloudflare Dashboard → **Storage & Databases** → **KV**.
+2. Click **Create namespace** and create:
+   - one production namespace (example: `travel-planner-ai-storage-prod`)
+   - one preview namespace (recommended)
+3. Copy namespace IDs.
+4. In `wrangler.toml`, ensure `[[kv_namespaces]]` is configured and uses binding name `AI_STORAGE`.
 
-The workflow triggers only when these files change:
-- `worker-ai-storage.js`
-- `wrangler.toml`
-- `.github/workflows/deploy-worker.yml`
-
-You can also run it manually from GitHub Actions via **workflow_dispatch**.
-
-## 6) Verify deployment
-1. GitHub → **Actions** → open `Deploy Cloudflare Worker` run.
-2. Ensure all steps pass.
-3. Cloudflare Dashboard → Workers & Pages → verify script updates and test endpoint.
-
-## 7) (Optional) Deploy to a custom domain route
-In `wrangler.toml`, uncomment and edit the `routes` example:
-```toml
-routes = [{ pattern = "api.example.com/worker-ai-storage/*", zone_name = "example.com" }]
-```
-Then commit and push.
-
-## Troubleshooting
-- **Error: authentication failed**
-  - Recheck `CLOUDFLARE_API_TOKEN` secret value and token permissions.
-- **Error: account id missing/invalid**
-  - Recheck `CLOUDFLARE_ACCOUNT_ID` secret value.
-- **No workflow run on push**
-  - Confirm push branch matches workflow branch.
-  - Confirm at least one watched path changed.
-- **Need deploy every push regardless of file path**
-  - Remove the `paths:` block from workflow trigger.
-
-
-## 8) Enable persistent cross-device account data (required)
-Your app now supports shared cloud storage for accounts/trips **only when two things are configured**:
-
-1. Cloudflare Worker has KV binding `AI_STORAGE` in `wrangler.toml`.
-2. Each device sets app localStorage key `tp-cloud-worker-endpoint` to your Worker URL.
-
-### 8.1 Configure KV binding
-1. Cloudflare Dashboard → Storage & Databases → KV → create namespace.
-2. Copy namespace IDs.
-3. In `wrangler.toml`, uncomment and fill:
-```toml
-[[kv_namespaces]]
-binding = "AI_STORAGE"
-id = "<your_kv_namespace_id>"
-preview_id = "<your_kv_preview_namespace_id>"
-```
-4. Commit and push so GitHub Actions redeploys.
-
-
-
-### 8.1.1 KV namespace step-by-step (exact clicks)
-1. Open Cloudflare dashboard and choose your account.
-2. Go to **Storage & Databases** → **KV**.
-3. Click **Create namespace**.
-4. Create one namespace for production (example: `travel-planner-ai-storage-prod`).
-5. (Optional but recommended) Create another for preview/dev (example: `travel-planner-ai-storage-preview`).
-6. Open each namespace and copy the namespace ID.
-
-### 8.1.2 Update `wrangler.toml`
-Uncomment and fill this block using the IDs:
+Example:
 ```toml
 [[kv_namespaces]]
 binding = "AI_STORAGE"
@@ -106,49 +52,59 @@ id = "<PROD_NAMESPACE_ID>"
 preview_id = "<PREVIEW_NAMESPACE_ID>"
 ```
 
-### 8.1.3 Commit and deploy
-1. Commit `wrangler.toml`.
-2. Push to your deploy branch (`main` in current workflow).
-3. Wait for GitHub Action `Deploy Cloudflare Worker` to pass.
+> Important: if binding is not exactly `AI_STORAGE`, the Worker will not read/write shared trip data.
 
-### 8.1.4 Verify KV is actually used
-Use your Worker URL and run these commands in terminal:
+## 6) Configure frontend Worker URL using env file
+This project now reads the Worker URL from Vite env var `VITE_CLOUD_WORKER_ENDPOINT`.
+
+### Local development
+1. Create local env file from template:
 ```bash
-curl -sS -X POST 'https://travel-planner-worker-ai-storage.simpsonts-lee.workers.dev'   -H 'content-type: application/json'   --data '{"id":"1","action":"set","key":"kv-check","value":{"ok":true}}'
-
-curl -sS -X POST 'https://travel-planner-worker-ai-storage.simpsonts-lee.workers.dev'   -H 'content-type: application/json'   --data '{"id":"2","action":"get","key":"kv-check"}'
+cp .env.example .env.local
 ```
-You should see `"exists":true` on the second response.
-
-### 8.1.5 Common failure fixes
-- If deploy fails with `Invalid TOML document`, open `wrangler.toml` and remove any merge markers like:
-  - `<<<<<<<`
-  - `=======`
-  - `>>>>>>>`
-- If deploy succeeds but cross-device data still not shared:
-  - Ensure `AI_STORAGE` is bound in deployed Worker.
-  - Ensure both devices open the same app URL and same Worker endpoint.
-  - Ensure browser extensions/privacy mode are not blocking storage/network.
-
-### 8.2 Configure app endpoint on each device
-Open browser devtools console on your app and run:
-```js
-localStorage.setItem('tp-cloud-worker-endpoint', 'https://travel-planner-worker-ai-storage.<subdomain>.workers.dev');
-location.reload();
+2. Edit `.env.local` and set your deployed Worker URL:
+```dotenv
+VITE_CLOUD_WORKER_ENDPOINT=https://travel-planner-worker-ai-storage.<your-subdomain>.workers.dev
+```
+3. Start dev server:
+```bash
+npm run dev
 ```
 
-After reload, profile/trip/admin/site settings are synced via Worker, enabling cross-device login.
+### Production / CI builds
+Set `VITE_CLOUD_WORKER_ENDPOINT` in the environment used for `npm run build`.
 
+For GitHub Pages + Actions, add repository variable or secret and expose it to the build step.
 
-## 9) GitHub Pages app is now preconfigured for your worker URL
-The app code now auto-uses this endpoint by default:
-- `https://travel-planner-worker-ai-storage.simpsonts-lee.workers.dev`
+## 7) Deploy worker and app
+1. Commit your changes.
+2. Push to deploy branch (`main` by default).
+3. Wait for GitHub Action `Deploy Cloudflare Worker` to pass.
+4. Deploy/update frontend so it includes the correct `VITE_CLOUD_WORKER_ENDPOINT` value.
 
-So opening `https://simpson2002-hke.github.io/Travel-Planner-pro/` should automatically attempt cloud sync with no console setup.
+## 8) Verify cross-device sync
+1. Open app on device A and create/update account or trip.
+2. Open the same deployed app on device B.
+3. Sign in with same account; data should match.
 
-### If you ever need to change the worker URL
-Run in browser console:
-```js
-localStorage.setItem('tp-cloud-worker-endpoint', 'https://YOUR-WORKER.workers.dev');
-location.reload();
+Optional API test:
+```bash
+curl -sS -X POST 'https://YOUR-WORKER.workers.dev' \
+  -H 'content-type: application/json' \
+  --data '{"id":"1","action":"set","key":"kv-check","value":{"ok":true}}'
+
+curl -sS -X POST 'https://YOUR-WORKER.workers.dev' \
+  -H 'content-type: application/json' \
+  --data '{"id":"2","action":"get","key":"kv-check"}'
 ```
+Second response should include `"exists":true`.
+
+## Troubleshooting
+- **No shared data across devices**
+  - Confirm frontend build contains correct `VITE_CLOUD_WORKER_ENDPOINT`.
+  - Confirm Worker has KV binding named `AI_STORAGE`.
+  - Confirm both devices open the same app deployment.
+- **Deploy fails with TOML error**
+  - Remove any merge markers (`<<<<<<<`, `=======`, `>>>>>>>`) from `wrangler.toml`.
+- **Authentication failed in GitHub Action**
+  - Recheck `CLOUDFLARE_API_TOKEN` permissions and secret value.
