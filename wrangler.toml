@@ -3,11 +3,11 @@ main = "worker-ai-storage.js"
 compatibility_date = "2026-03-16"
 workers_dev = true
 
-# Required for persistent cross-device storage (create namespace in Cloudflare and set IDs).
-# Remove leading # after creating namespaces in Cloudflare:
+# Required for persistent cross-device storage.
 [[kv_namespaces]]
-binding = "travel-planner-ai-storage-prod"
+binding = "AI_STORAGE"
 id = "ea9af737d45f4bd4a0f750584725472d"
+# preview_id = "<your_kv_preview_namespace_id>"
 
 # Optional: route + zone for custom domain deployments.
 # routes = [{ pattern = "api.example.com/worker-ai-storage/*", zone_name = "example.com" }]

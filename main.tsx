@@ -164,7 +164,7 @@ function usePersist<T>(key:string,init:T){
 }
 
 const CLOUD_ENDPOINT_KEY = "tp-cloud-worker-endpoint";
-const DEFAULT_CLOUD_WORKER_ENDPOINT = "https://travel-planner-worker-ai-storage.simpsonts-lee.workers.dev";
+const DEFAULT_CLOUD_WORKER_ENDPOINT = (import.meta.env.VITE_CLOUD_WORKER_ENDPOINT ?? "").trim();
 const CLOUD_SHARED_KEYS = new Set([SK.profiles,SK.trips,SK.adminPw,SK.site]);
 
 function getCloudWorkerEndpoint(){
