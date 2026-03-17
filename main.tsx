@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ButtonHTMLAttributes, ChangeEvent, InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from "react";
 import { createRoot } from "react-dom/client";
 import { motion } from "framer-motion";
@@ -190,7 +190,9 @@ function useSharedPersist<T>(key:string,init:T){
   const [s,set]=usePersist<T>(key,init);
   const [cloudReady,setCloudReady]=useState(!CLOUD_SHARED_KEYS.has(key) || !getCloudWorkerEndpoint());
 
-  useEffect(()=>{
+  useEffect(()=>{ stateRef.current=s; },[s]);
+
+  const pullFromCloud = useCallback(async()=>{
     if(!CLOUD_SHARED_KEYS.has(key)) return;
     const endpoint=getCloudWorkerEndpoint();
     if(!endpoint){
@@ -198,24 +200,45 @@ function useSharedPersist<T>(key:string,init:T){
       return;
     }
     let cancelled=false;
+
     (async()=>{
       try{
         const r=await cloudStorageRequest(endpoint,"get",key);
         if(cancelled) return;
-        if(r?.exists) set(r.value as T);
-        else await cloudStorageRequest(endpoint,"set",key,s);
+        if(r?.exists){
+          skipNextCloudPushRef.current=true;
+          set(r.value as T);
+        }else await cloudStorageRequest(endpoint,"set",key,stateRef.current);
       }catch{}
       finally{
         if(!cancelled) setCloudReady(true);
       }
     })();
-    return ()=>{cancelled=true;};
-    // run only once on mount
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[key]);
+
+    const onFocus=()=>{ void pullFromCloud(); };
+    const onVisible=()=>{ if(document.visibilityState==="visible") void pullFromCloud(); };
+    const timer=window.setInterval(()=>{ void pullFromCloud(); },30000);
+    window.addEventListener("focus",onFocus);
+    document.addEventListener("visibilitychange",onVisible);
+
+    return ()=>{
+      cancelled=true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus",onFocus);
+      document.removeEventListener("visibilitychange",onVisible);
+    };
+  },[key,pullFromCloud,set]);
 
   useEffect(()=>{
     if(!CLOUD_SHARED_KEYS.has(key)) return;
+    if(!isCloudSyncReadyRef.current){
+      pendingCloudPushRef.current=true;
+      return;
+    }
+    if(skipNextCloudPushRef.current){
+      skipNextCloudPushRef.current=false;
+      return;
+    }
     const endpoint=getCloudWorkerEndpoint();
     if(!endpoint) return;
     if(!cloudReady) return;
