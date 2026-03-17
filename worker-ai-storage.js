@@ -2,7 +2,7 @@
 // Supports:
 // 1) Dedicated Web Worker message API (in-memory Map)
 // 2) Service Worker message API (in-memory Map)
-// 3) Cloudflare Worker Fetch API with optional KV persistence via env.AI_STORAGE
+// 3) Cloudflare Worker Fetch API with optional KV persistence via env.KV_BINDING (or env.AI_STORAGE fallback)
 
 const memoryStore = new Map();
 
@@ -125,8 +125,9 @@ function createKVAdapter(kv) {
 }
 
 function pickStorage(env) {
-  if (env?.AI_STORAGE && typeof env.AI_STORAGE.get === 'function') {
-    return createKVAdapter(env.AI_STORAGE);
+  const kv = env?.KV_BINDING ?? env?.AI_STORAGE;
+  if (kv && typeof kv.get === 'function') {
+    return createKVAdapter(kv);
   }
   return createMemoryAdapter(memoryStore);
 }

@@ -1,154 +1,74 @@
 # Cloudflare Worker + GitHub Actions (Option 2) Setup
 
-This guide links your GitHub repo to Cloudflare Worker deployments using `wrangler` in GitHub Actions.
+This guide is now aligned to your exact configuration:
+- Worker name: `travel-planner-ai-storage-prod`
+- KV binding: `KV_BINDING`
+- KV id: `ea9af737d45f4bd4a0f750584725472d`
+- workers.dev URL: `https://travel-planner-ai-storage-prod.simpsonts-lee.workers.dev`
 
-## What was added
-- `wrangler.toml` (Worker config)
-- `.github/workflows/deploy-worker.yml` (auto deploy workflow)
+## 5) Configure KV binding (required for shared account/trip data)
 
-## 1) Confirm your default deploy branch
-This workflow deploys when pushing to `main`.
+### 5.1 What binding name means
+`binding` is the variable name exposed in Worker runtime `env`.
+In this project, code supports both `KV_BINDING` (your current config) and `AI_STORAGE` (legacy fallback).
 
-If your branch is not `main`, edit `.github/workflows/deploy-worker.yml`:
-```yaml
-on:
-  push:
-    branches:
-      - your-branch-name
-```
-
-## 2) Create a Cloudflare API Token
-1. Cloudflare Dashboard → **My Profile** → **API Tokens** → **Create Token**.
-2. Use **Edit Cloudflare Workers** template (or custom token).
-3. Minimum token permissions:
-   - `Account` → `Cloudflare Workers Scripts` → `Edit`
-   - `Account` → `Account Settings` → `Read`
-4. Scope the token to your Cloudflare account.
-5. Copy the token value.
-
-## 3) Find your Cloudflare Account ID
-- Dashboard right sidebar shows **Account ID**, or
-- Workers & Pages account overview page.
-
-## 4) Add GitHub repository secrets
-GitHub repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**:
-- `CLOUDFLARE_API_TOKEN` = (token from step 2)
-- `CLOUDFLARE_ACCOUNT_ID` = (account id from step 3)
-
-## 5) Push changes to trigger deploy
-Push commits to the configured branch (`main` by default).
-
-The workflow triggers only when these files change:
-- `worker-ai-storage.js`
-- `wrangler.toml`
-- `.github/workflows/deploy-worker.yml`
-
-You can also run it manually from GitHub Actions via **workflow_dispatch**.
-
-## 6) Verify deployment
-1. GitHub → **Actions** → open `Deploy Cloudflare Worker` run.
-2. Ensure all steps pass.
-3. Cloudflare Dashboard → Workers & Pages → verify script updates and test endpoint.
-
-## 7) (Optional) Deploy to a custom domain route
-In `wrangler.toml`, uncomment and edit the `routes` example:
+### 5.2 Exact `wrangler.toml`
 ```toml
-routes = [{ pattern = "api.example.com/worker-ai-storage/*", zone_name = "example.com" }]
-```
-Then commit and push.
+name = "travel-planner-ai-storage-prod"
+main = "worker-ai-storage.js"
+compatibility_date = "2026-03-16"
+workers_dev = true
 
-## Troubleshooting
-- **Error: authentication failed**
-  - Recheck `CLOUDFLARE_API_TOKEN` secret value and token permissions.
-- **Error: account id missing/invalid**
-  - Recheck `CLOUDFLARE_ACCOUNT_ID` secret value.
-- **No workflow run on push**
-  - Confirm push branch matches workflow branch.
-  - Confirm at least one watched path changed.
-- **Need deploy every push regardless of file path**
-  - Remove the `paths:` block from workflow trigger.
-
-
-## 8) Enable persistent cross-device account data (required)
-Your app now supports shared cloud storage for accounts/trips **only when two things are configured**:
-
-1. Cloudflare Worker has KV binding `AI_STORAGE` in `wrangler.toml`.
-2. Each device sets app localStorage key `tp-cloud-worker-endpoint` to your Worker URL.
-
-### 8.1 Configure KV binding
-1. Cloudflare Dashboard → Storage & Databases → KV → create namespace.
-2. Copy namespace IDs.
-3. In `wrangler.toml`, uncomment and fill:
-```toml
 [[kv_namespaces]]
-binding = "AI_STORAGE"
-id = "<your_kv_namespace_id>"
-preview_id = "<your_kv_preview_namespace_id>"
-```
-4. Commit and push so GitHub Actions redeploys.
-
-
-
-### 8.1.1 KV namespace step-by-step (exact clicks)
-1. Open Cloudflare dashboard and choose your account.
-2. Go to **Storage & Databases** → **KV**.
-3. Click **Create namespace**.
-4. Create one namespace for production (example: `travel-planner-ai-storage-prod`).
-5. (Optional but recommended) Create another for preview/dev (example: `travel-planner-ai-storage-preview`).
-6. Open each namespace and copy the namespace ID.
-
-### 8.1.2 Update `wrangler.toml`
-Uncomment and fill this block using the IDs:
-```toml
-[[kv_namespaces]]
-binding = "AI_STORAGE"
-id = "<PROD_NAMESPACE_ID>"
-preview_id = "<PREVIEW_NAMESPACE_ID>"
+binding = "KV_BINDING"
+id = "ea9af737d45f4bd4a0f750584725472d"
 ```
 
-### 8.1.3 Commit and deploy
-1. Commit `wrangler.toml`.
-2. Push to your deploy branch (`main` in current workflow).
-3. Wait for GitHub Action `Deploy Cloudflare Worker` to pass.
-
-### 8.1.4 Verify KV is actually used
-Use your Worker URL and run these commands in terminal:
+### 5.3 Verify KV works
 ```bash
-curl -sS -X POST 'https://travel-planner-worker-ai-storage.simpsonts-lee.workers.dev'   -H 'content-type: application/json'   --data '{"id":"1","action":"set","key":"kv-check","value":{"ok":true}}'
+curl -sS -X POST 'https://travel-planner-ai-storage-prod.simpsonts-lee.workers.dev'   -H 'content-type: application/json'   --data '{"id":"1","action":"set","key":"kv-check","value":{"ok":true}}'
 
-curl -sS -X POST 'https://travel-planner-worker-ai-storage.simpsonts-lee.workers.dev'   -H 'content-type: application/json'   --data '{"id":"2","action":"get","key":"kv-check"}'
+curl -sS -X POST 'https://travel-planner-ai-storage-prod.simpsonts-lee.workers.dev'   -H 'content-type: application/json'   --data '{"id":"2","action":"get","key":"kv-check"}'
 ```
-You should see `"exists":true` on the second response.
+Expected: second response includes `"exists":true`.
 
-### 8.1.5 Common failure fixes
-- If deploy fails with `Invalid TOML document`, open `wrangler.toml` and remove any merge markers like:
-  - `<<<<<<<`
-  - `=======`
-  - `>>>>>>>`
-- If deploy succeeds but cross-device data still not shared:
-  - Ensure `AI_STORAGE` is bound in deployed Worker.
-  - Ensure both devices open the same app URL and same Worker endpoint.
-  - Ensure browser extensions/privacy mode are not blocking storage/network.
+## 6) Entire frontend env setup
 
-### 8.2 Configure app endpoint on each device
-Open browser devtools console on your app and run:
+1. Create local env file:
+```bash
+cp .env.example .env.local
+```
+
+2. Confirm `.env.local` contains:
+```dotenv
+VITE_CLOUD_WORKER_ENDPOINT=https://travel-planner-ai-storage-prod.simpsonts-lee.workers.dev
+```
+
+3. Restart dev server after env changes:
+```bash
+npm run dev
+```
+
+4. For CI/production build, set the same env var in build environment:
+- `VITE_CLOUD_WORKER_ENDPOINT=https://travel-planner-ai-storage-prod.simpsonts-lee.workers.dev`
+
+5. Because you already stored keys in GitHub, just ensure build workflow exports this env variable before `npm run build`.
+
+6. Clear stale endpoint on each device once:
 ```js
-localStorage.setItem('tp-cloud-worker-endpoint', 'https://travel-planner-worker-ai-storage.<subdomain>.workers.dev');
+localStorage.removeItem('tp-cloud-worker-endpoint');
 location.reload();
 ```
 
-After reload, profile/trip/admin/site settings are synced via Worker, enabling cross-device login.
+## 7) Preview URLs
+Your preview pattern is:
+- `*-travel-planner-ai-storage-prod.simpsonts-lee.workers.dev`
 
+If you use preview deployment URLs for frontend, keep frontend and worker environment aligned (preview frontend should point to matching preview worker URL).
 
-## 9) GitHub Pages app is now preconfigured for your worker URL
-The app code now auto-uses this endpoint by default:
-- `https://travel-planner-worker-ai-storage.simpsonts-lee.workers.dev`
-
-So opening `https://simpson2002-hke.github.io/Travel-Planner-pro/` should automatically attempt cloud sync with no console setup.
-
-### If you ever need to change the worker URL
-Run in browser console:
-```js
-localStorage.setItem('tp-cloud-worker-endpoint', 'https://YOUR-WORKER.workers.dev');
-location.reload();
-```
+## 8) End-to-end cross-device check
+1. Device A: login and create trip `sync-test-1`.
+2. Device B: same app URL + same account.
+3. Confirm `sync-test-1` appears.
+4. Device B edits trip name.
+5. Device A refresh and confirm update.
