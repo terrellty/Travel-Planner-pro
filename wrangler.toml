@@ -1,6 +1,7 @@
 name = "travel-planner-ai-storage"
 main = "worker-ai-storage.js"
 compatibility_date = "2026-03-18"
+account_id = "64ba8506f5d201ceed54c05d58743ce4"
 workers_dev = true
 
 # Required for persistent cross-device storage.
