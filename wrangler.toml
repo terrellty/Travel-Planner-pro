@@ -1,12 +1,12 @@
-name = "travel-planner-ai-storage-prod"
+name = "travel-planner-ai-storage"
 main = "worker-ai-storage.js"
-compatibility_date = "2026-03-16"
+compatibility_date = "2026-03-18"
 workers_dev = true
 
 # Required for persistent cross-device storage.
-[[kv_namespaces]]
+[[travel-planner-ai-storage]]
 binding = "KV_BINDING"
-id = "ea9af737d45f4bd4a0f750584725472d"
+id = "b20471c30ce246f59d3d5f17ee62e5e8"
 # preview_id = "<your_kv_preview_namespace_id>"
 
 # Optional preview KV if you create one later.
