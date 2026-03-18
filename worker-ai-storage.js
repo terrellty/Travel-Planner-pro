@@ -126,11 +126,13 @@ function createKVAdapter(kv) {
 }
 
 function pickStorage(env) {
-  if (env?.AI_STORAGE && typeof env.AI_STORAGE.get === 'function') {
-    return createKVAdapter(env.AI_STORAGE);
+  const bindingSource = env ?? globalThis;
+
+  if (bindingSource?.AI_STORAGE && typeof bindingSource.AI_STORAGE.get === 'function') {
+    return createKVAdapter(bindingSource.AI_STORAGE);
   }
-  if (env?.KV_BINDING && typeof env.KV_BINDING.get === 'function') {
-    return createKVAdapter(env.KV_BINDING);
+  if (bindingSource?.KV_BINDING && typeof bindingSource.KV_BINDING.get === 'function') {
+    return createKVAdapter(bindingSource.KV_BINDING);
   }
   return createMemoryAdapter(memoryStore);
 }
