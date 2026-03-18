@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ButtonHTMLAttributes, ChangeEvent, InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from "react";
 import { createRoot } from "react-dom/client";
 import { motion } from "framer-motion";
@@ -85,6 +85,11 @@ type SiteSettings = {
   siteName: string; description: string; weatherApi: WeatherApiSettings;
   luggageCategories: LuggageCategory[];
 };
+type CloudSyncEnvelope<T> = {
+  value: T;
+  updatedAt: string;
+  deviceId: string;
+};
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    CONSTANTS & DEFAULTS
@@ -164,8 +169,10 @@ function usePersist<T>(key:string,init:T){
 }
 
 const CLOUD_ENDPOINT_KEY = "tp-cloud-worker-endpoint";
+const CLOUD_DEVICE_ID_KEY = "tp-cloud-device-id";
 const DEFAULT_CLOUD_WORKER_ENDPOINT = "https://travel-planner-worker-ai-storage.simpsonts-lee.workers.dev";
 const CLOUD_SHARED_KEYS = new Set([SK.profiles,SK.trips,SK.adminPw,SK.site]);
+const CLOUD_SYNC_INTERVAL_MS = 15000;
 
 function getCloudWorkerEndpoint(){
   try{
@@ -188,33 +195,137 @@ async function cloudStorageRequest(endpoint:string,action:string,key:string,valu
   return data?.data;
 }
 
+function getCloudDeviceId(){
+  try{
+    const existing = localStorage.getItem(CLOUD_DEVICE_ID_KEY)?.trim();
+    if(existing) return existing;
+    const created = crypto.randomUUID();
+    localStorage.setItem(CLOUD_DEVICE_ID_KEY,created);
+    return created;
+  }catch{
+    return crypto.randomUUID();
+  }
+}
+
+function parseCloudEnvelope<T>(value:unknown): CloudSyncEnvelope<T> | null{
+  if(!value || typeof value !== "object") return null;
+  const candidate = value as Partial<CloudSyncEnvelope<T>>;
+  if(typeof candidate.updatedAt !== "string" || typeof candidate.deviceId !== "string" || !("value" in candidate)) return null;
+  return candidate as CloudSyncEnvelope<T>;
+}
+
 function useSharedPersist<T>(key:string,init:T){
   const [s,set]=usePersist<T>(key,init);
+  const stateRef = useRef(s);
+  const hydratedRef = useRef(false);
+  const skipNextPushRef = useRef(false);
+  const latestRemoteAtRef = useRef("");
+  const deviceIdRef = useRef(getCloudDeviceId());
 
-  useEffect(()=>{
+  useEffect(()=>{ stateRef.current=s; },[s]);
+
+  const pushRemote = useCallback(async()=>{
     if(!CLOUD_SHARED_KEYS.has(key)) return;
     const endpoint=getCloudWorkerEndpoint();
     if(!endpoint) return;
-    let cancelled=false;
-    (async()=>{
-      try{
-        const r=await cloudStorageRequest(endpoint,"get",key);
-        if(cancelled) return;
-        if(r?.exists) set(r.value as T);
-        else await cloudStorageRequest(endpoint,"set",key,s);
-      }catch{}
-    })();
-    return ()=>{cancelled=true;};
-    // run only once on mount
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
+    const payload: CloudSyncEnvelope<T> = {
+      value: stateRef.current,
+      updatedAt: new Date().toISOString(),
+      deviceId: deviceIdRef.current,
+    };
+
+    latestRemoteAtRef.current = payload.updatedAt;
+    await cloudStorageRequest(endpoint,"set",key,payload);
   },[key]);
 
-  useEffect(()=>{
+  const pullRemote = useCallback(async()=>{
     if(!CLOUD_SHARED_KEYS.has(key)) return;
     const endpoint=getCloudWorkerEndpoint();
     if(!endpoint) return;
-    cloudStorageRequest(endpoint,"set",key,s).catch(()=>{});
-  },[key,s]);
+
+    const remote = await cloudStorageRequest(endpoint,"get",key);
+    if(!remote?.exists){
+      await pushRemote();
+      hydratedRef.current = true;
+      return;
+    }
+
+    const envelope = parseCloudEnvelope<T>(remote.value);
+    const remoteValue = envelope ? envelope.value : remote.value as T;
+    const remoteUpdatedAt = envelope?.updatedAt ?? "";
+    const localSerialized = JSON.stringify(stateRef.current);
+    const remoteSerialized = JSON.stringify(remoteValue);
+    const shouldAdoptRemote =
+      !hydratedRef.current ||
+      (remoteUpdatedAt && remoteUpdatedAt > latestRemoteAtRef.current && remoteSerialized !== localSerialized);
+
+    if(remoteUpdatedAt && remoteUpdatedAt > latestRemoteAtRef.current){
+      latestRemoteAtRef.current = remoteUpdatedAt;
+    }
+
+    if(shouldAdoptRemote && remoteSerialized !== localSerialized){
+      skipNextPushRef.current = true;
+      set(remoteValue);
+    }
+
+    hydratedRef.current = true;
+  },[key,pushRemote,set]);
+
+  useEffect(()=>{
+    (async()=>{
+      try{
+        await pullRemote();
+      }catch{
+        hydratedRef.current = true;
+      }
+    })();
+    // run only once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[key,pullRemote]);
+
+  useEffect(()=>{
+    if(!CLOUD_SHARED_KEYS.has(key)) return;
+    if(!hydratedRef.current) return;
+    if(skipNextPushRef.current){
+      skipNextPushRef.current = false;
+      return;
+    }
+    pushRemote().catch(()=>{});
+  },[key,pushRemote,s]);
+
+  useEffect(()=>{
+    if(!CLOUD_SHARED_KEYS.has(key) || typeof window === "undefined") return;
+
+    const syncNow = ()=>{ pullRemote().catch(()=>{}); };
+    const handleVisibility = ()=>{ if(document.visibilityState === "visible") syncNow(); };
+    const handleStorage = (event:StorageEvent)=>{
+      if(event.key === key && event.newValue){
+        try{
+          const nextValue = JSON.parse(event.newValue) as T;
+          if(JSON.stringify(nextValue) !== JSON.stringify(stateRef.current)){
+            skipNextPushRef.current = true;
+            set(nextValue);
+          }
+        }catch{}
+      }
+      if(event.key === CLOUD_ENDPOINT_KEY) syncNow();
+    };
+
+    const timer = window.setInterval(syncNow,CLOUD_SYNC_INTERVAL_MS);
+    window.addEventListener("focus",syncNow);
+    window.addEventListener("online",syncNow);
+    window.addEventListener("storage",handleStorage);
+    document.addEventListener("visibilitychange",handleVisibility);
+
+    return ()=>{
+      window.clearInterval(timer);
+      window.removeEventListener("focus",syncNow);
+      window.removeEventListener("online",syncNow);
+      window.removeEventListener("storage",handleStorage);
+      document.removeEventListener("visibilitychange",handleVisibility);
+    };
+  },[key,pullRemote,set]);
 
   return [s,set] as const;
 }
