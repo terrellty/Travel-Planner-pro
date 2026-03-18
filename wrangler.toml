@@ -4,7 +4,7 @@ compatibility_date = "2026-03-18"
 workers_dev = true
 
 # Required for persistent cross-device storage.
-[[travel-planner-ai-storage]]
+[[kv_namespaces]]
 binding = "KV_BINDING"
 id = "b20471c30ce246f59d3d5f17ee62e5e8"
 # preview_id = "<your_kv_preview_namespace_id>"
