@@ -87,6 +87,8 @@ preview_id = "<your_kv_preview_namespace_id>"
 ```
 4. Commit and push so GitHub Actions redeploys.
 
+> Important: the binding name must be exactly `AI_STORAGE`. If it uses a different name, the Worker falls back to temporary in-memory storage and cross-device sync will stop working after reloads or across devices.
+
 
 
 ### 8.1.1 KV namespace step-by-step (exact clicks)
@@ -138,6 +140,17 @@ location.reload();
 ```
 
 After reload, profile/trip/admin/site settings are synced via Worker, enabling cross-device login.
+
+## 8.3 Automatic synchronization behavior
+The app now performs automatic sync for shared data in these cases:
+- on first app load
+- every 15 seconds while the app is open
+- when the tab regains focus
+- when the tab becomes visible again
+- when the browser comes back online
+- when another tab on the same device updates local storage
+
+This means the latest shared profiles, trips, admin password, and site settings will refresh automatically on the same or different devices as long as they point to the same deployed Worker endpoint.
 
 
 ## 9) GitHub Pages app is now preconfigured for your worker URL
