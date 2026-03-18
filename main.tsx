@@ -189,6 +189,10 @@ async function cloudStorageRequest(endpoint:string,action:string,key:string,valu
 function useSharedPersist<T>(key:string,init:T){
   const [s,set]=usePersist<T>(key,init);
   const [cloudReady,setCloudReady]=useState(!CLOUD_SHARED_KEYS.has(key) || !getCloudWorkerEndpoint());
+  const stateRef=useRef(s);
+  const isCloudSyncReadyRef=useRef(!CLOUD_SHARED_KEYS.has(key) || !getCloudWorkerEndpoint());
+  const pendingCloudPushRef=useRef(false);
+  const skipNextCloudPushRef=useRef(false);
 
   useEffect(()=>{ stateRef.current=s; },[s]);
 
@@ -197,23 +201,30 @@ function useSharedPersist<T>(key:string,init:T){
     const endpoint=getCloudWorkerEndpoint();
     if(!endpoint){
       setCloudReady(true);
+      isCloudSyncReadyRef.current=true;
       return;
     }
-    let cancelled=false;
 
-    (async()=>{
-      try{
-        const r=await cloudStorageRequest(endpoint,"get",key);
-        if(cancelled) return;
-        if(r?.exists){
-          skipNextCloudPushRef.current=true;
-          set(r.value as T);
-        }else await cloudStorageRequest(endpoint,"set",key,stateRef.current);
-      }catch{}
-      finally{
-        if(!cancelled) setCloudReady(true);
+    try{
+      const r=await cloudStorageRequest(endpoint,"get",key);
+      if(r?.exists){
+        skipNextCloudPushRef.current=true;
+        set(r.value as T);
+      }else await cloudStorageRequest(endpoint,"set",key,stateRef.current);
+    }catch{}
+    finally{
+      setCloudReady(true);
+      isCloudSyncReadyRef.current=true;
+      if(pendingCloudPushRef.current){
+        pendingCloudPushRef.current=false;
+        cloudStorageRequest(endpoint,"set",key,stateRef.current).catch(()=>{});
       }
-    })();
+    }
+  },[key,set]);
+
+  useEffect(()=>{
+    if(!CLOUD_SHARED_KEYS.has(key)) return;
+    void pullFromCloud();
 
     const onFocus=()=>{ void pullFromCloud(); };
     const onVisible=()=>{ if(document.visibilityState==="visible") void pullFromCloud(); };
@@ -222,12 +233,11 @@ function useSharedPersist<T>(key:string,init:T){
     document.addEventListener("visibilitychange",onVisible);
 
     return ()=>{
-      cancelled=true;
       window.clearInterval(timer);
       window.removeEventListener("focus",onFocus);
       document.removeEventListener("visibilitychange",onVisible);
     };
-  },[key,pullFromCloud,set]);
+  },[key,pullFromCloud]);
 
   useEffect(()=>{
     if(!CLOUD_SHARED_KEYS.has(key)) return;
