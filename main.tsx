@@ -90,6 +90,11 @@ type CloudSyncEnvelope<T> = {
   updatedAt: string;
   deviceId: string;
 };
+type SharedPersistMeta = {
+  hydrated: boolean;
+  lastError: string;
+  syncNow: () => Promise<void>;
+};
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    CONSTANTS & DEFAULTS
@@ -217,6 +222,8 @@ function useSharedPersist<T>(key:string,init:T){
   const skipNextPushRef = useRef(false);
   const latestRemoteAtRef = useRef("");
   const deviceIdRef = useRef(getCloudDeviceId());
+  const [hydrated,setHydrated] = useState(!CLOUD_SHARED_KEYS.has(key));
+  const [lastError,setLastError] = useState("");
 
   useEffect(()=>{ stateRef.current=s; },[s]);
 
@@ -231,8 +238,9 @@ function useSharedPersist<T>(key:string,init:T){
       deviceId: deviceIdRef.current,
     };
 
-    latestRemoteAtRef.current = payload.updatedAt;
     await cloudStorageRequest(endpoint,"set",key,payload);
+    latestRemoteAtRef.current = payload.updatedAt;
+    setLastError("");
   },[key]);
 
   const pullRemote = useCallback(async()=>{
@@ -244,6 +252,8 @@ function useSharedPersist<T>(key:string,init:T){
     if(!remote?.exists){
       await pushRemote();
       hydratedRef.current = true;
+      setHydrated(true);
+      setLastError("");
       return;
     }
 
@@ -266,14 +276,18 @@ function useSharedPersist<T>(key:string,init:T){
     }
 
     hydratedRef.current = true;
+    setHydrated(true);
+    setLastError("");
   },[key,pushRemote,set]);
 
   useEffect(()=>{
     (async()=>{
       try{
         await pullRemote();
-      }catch{
+      }catch(error){
+        setLastError(error instanceof Error ? error.message : "Cloud sync failed.");
         hydratedRef.current = true;
+        setHydrated(true);
       }
     })();
     // run only once on mount
@@ -287,7 +301,9 @@ function useSharedPersist<T>(key:string,init:T){
       skipNextPushRef.current = false;
       return;
     }
-    pushRemote().catch(()=>{});
+    pushRemote().catch((error)=>{
+      setLastError(error instanceof Error ? error.message : "Cloud sync failed.");
+    });
   },[key,pushRemote,s]);
 
   useEffect(()=>{
@@ -323,7 +339,11 @@ function useSharedPersist<T>(key:string,init:T){
     };
   },[key,pullRemote,set]);
 
-  return [s,set] as const;
+  const syncNow = useCallback(async()=>{
+    await pullRemote();
+  },[pullRemote]);
+
+  return [s,set,{hydrated,lastError,syncNow}] as const;
 }
 
 function useT(lang:Language){ return (k:TKey)=>translations[lang][k]; }
@@ -2524,12 +2544,12 @@ function AdminPasswordForm({th,t,onSave}:{th:ThemeMode;t:(k:TKey)=>string;onSave
 export function App(){
   const [theme,setTheme]=usePersist<ThemeMode>(SK.theme,"dark");
   const [lang,setLang]=usePersist<Language>(SK.lang,"en");
-  const [profiles,setProfiles]=useSharedPersist<Profile[]>(SK.profiles,[]);
-  const [trips,setTrips]=useSharedPersist<Trip[]>(SK.trips,[]);
-  const [adminPw,setAdminPw]=useSharedPersist<string>(SK.adminPw,"");
+  const [profiles,setProfiles,profilesMeta]=useSharedPersist<Profile[]>(SK.profiles,[]);
+  const [trips,setTrips,tripsMeta]=useSharedPersist<Trip[]>(SK.trips,[]);
+  const [adminPw,setAdminPw,adminPwMeta]=useSharedPersist<string>(SK.adminPw,"");
   const [adminAuth,setAdminAuth]=usePersist<boolean>(SK.adminAuth,false);
   const [userId,setUserId]=usePersist<string>(SK.userId,"");
-  const [siteCfg,setSiteCfg]=useSharedPersist<SiteSettings>(SK.site,defaultSiteSettings);
+  const [siteCfg,setSiteCfg,siteCfgMeta]=useSharedPersist<SiteSettings>(SK.site,defaultSiteSettings);
   const [view,setView]=useState<ViewMode>("user");
   const [authMode,setAuthMode]=useState<"signin"|"signup">("signin");
   const [showAuth,setShowAuth]=useState(false);
@@ -2539,9 +2559,17 @@ export function App(){
   useEffect(()=>{setProfiles(c=>c.map(normProfile));setTrips(c=>c.map(normTrip));setSiteCfg(c=>normSite(c));},[]);
   useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);
 
+  const sharedSyncReady = profilesMeta.hydrated && tripsMeta.hydrated && adminPwMeta.hydrated && siteCfgMeta.hydrated;
+  const sharedSyncErrors = [profilesMeta.lastError,tripsMeta.lastError,adminPwMeta.lastError,siteCfgMeta.lastError].filter(Boolean);
+  const syncStatusMessage = sharedSyncErrors[0] ?? "";
+  const refreshSharedSync = async()=>{
+    await Promise.allSettled([profilesMeta.syncNow(),tripsMeta.syncNow(),adminPwMeta.syncNow(),siteCfgMeta.syncNow()]);
+  };
+
   const user=useMemo(()=>profiles.find(p=>p.id===userId),[userId,profiles]);
 
   const handleSignIn=(ident:string,pw:string)=>{
+    if(!sharedSyncReady)return{ok:false,message:"Shared account data is still syncing. Please wait a moment and try again."};
     const found=profiles.find(p=>(p.email.toLowerCase()===ident.trim().toLowerCase()||p.accountName.toLowerCase()===ident.trim().toLowerCase())&&p.password===pw);
     if(!found)return{ok:false,message:t("invalidCredentials")};
     setUserId(found.id);return{ok:true,message:"OK"};
@@ -2628,9 +2656,29 @@ export function App(){
       user={user} view={view} setView={setView} t={t}
       onLogout={()=>setUserId("")} onSignIn={()=>{setAuthMode("signin");setShowAuth(true);}}/>}
 
-    {view==="admin"&&!showLanding&&<AdminWorkspace profiles={profiles} trips={trips} th={theme} t={t}
-      adminPw={adminPw} adminAuth={adminAuth} setAdminPw={setAdminPw} setAdminAuth={setAdminAuth}
-      siteCfg={siteCfg} setSiteCfg={setSiteCfg} onDeleteTrip={deleteTrip} onDeleteTraveler={deleteTraveler}/>}
+    {view==="admin"&&!showLanding&&(
+      !sharedSyncReady
+        ? <div className="max-w-3xl mx-auto px-5 py-20">
+            <Card th={theme} className="p-8 space-y-4">
+              <h2 className="text-2xl font-bold">☁️ Syncing shared travel data…</h2>
+              <p className={cx(theme==="dark"?"text-slate-300":"text-slate-600")}>
+                Please wait while this device loads shared accounts, trips, admin settings, and website settings from the cloud worker.
+              </p>
+              {syncStatusMessage && <div className={cx("rounded-2xl border p-4 text-sm leading-relaxed",
+                theme==="dark"?"border-amber-400/30 bg-amber-400/10 text-amber-200":"border-amber-200 bg-amber-50 text-amber-800")}>
+                <p className="font-semibold">Sync error</p>
+                <p className="mt-1 break-words">{syncStatusMessage}</p>
+                <p className="mt-2">Possible fixes: confirm both devices use the same app URL, clear any stale cloud endpoint override in local storage, and verify the Cloudflare worker KV binding is deployed.</p>
+              </div>}
+              <div className="flex gap-2">
+                <Btn th={theme} onClick={()=>{refreshSharedSync().catch(()=>{});}}>Retry Sync</Btn>
+              </div>
+            </Card>
+          </div>
+        : <AdminWorkspace profiles={profiles} trips={trips} th={theme} t={t}
+            adminPw={adminPw} adminAuth={adminAuth} setAdminPw={setAdminPw} setAdminAuth={setAdminAuth}
+            siteCfg={siteCfg} setSiteCfg={setSiteCfg} onDeleteTrip={deleteTrip} onDeleteTraveler={deleteTraveler}/>
+    )}
 
     {view==="user"&&user&&<UserWorkspace user={user} trips={trips} profiles={profiles} siteCfg={siteCfg} th={theme} t={t}
       onUpdate={d=>setProfiles(c=>c.map(p=>p.id===user.id?{...p,...d,
