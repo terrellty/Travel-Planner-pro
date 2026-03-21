@@ -71,6 +71,12 @@ const en = {
 
   overview: "Overview", itinerary: "Itinerary", expenses: "Expenses",
   luggage: "Luggage", settings: "Settings", travelers: "Travellers",
+  exportPdf: "Export PDF", itinerarySchedule: "Schedule", optionalPlaces: "Optional Places",
+  optionalPlacesDesc: "Save extra sites and restaurants for this trip day, even if they are not confirmed yet.",
+  addOptionalPlace: "Add Optional Place", editOptionalPlace: "Edit Optional Place", saveOptionalPlace: "Save Optional Place",
+  noOptionalPlaces: "No optional places yet", noOptionalPlacesDesc: "Save backup sites, cafes, or restaurants here.",
+  placeName: "Place Name", placeType: "Place Type", optionalLocation: "Area / Address", reservationLink: "Link / Reservation",
+  optionalPlaceNotes: "Notes", sight: "Sight", restaurant: "Restaurant", other: "Other",
 
   dates: "Dates", flightDetails: "Flight Details", hotelDetails: "Hotel Details", departureDate: "Departure Date", arrivalDate: "Arrival Date",
   noFlightDetails: "Flight details not added yet", noHotelDetails: "Hotel details not added yet",
@@ -241,6 +247,12 @@ const zh: typeof en = {
 
   overview: "概覽", itinerary: "行程", expenses: "開支",
   luggage: "行李", settings: "設定", travelers: "旅客",
+  exportPdf: "匯出 PDF", itinerarySchedule: "已排定行程", optionalPlaces: "備選景點 / 餐廳",
+  optionalPlacesDesc: "為每天先存放尚未確定的景點、餐廳或其他備選安排。",
+  addOptionalPlace: "新增備選地點", editOptionalPlace: "編輯備選地點", saveOptionalPlace: "儲存備選地點",
+  noOptionalPlaces: "尚無備選地點", noOptionalPlacesDesc: "可在此儲存備用景點、咖啡店或餐廳。",
+  placeName: "地點名稱", placeType: "地點類型", optionalLocation: "區域 / 地址", reservationLink: "連結 / 訂位網址",
+  optionalPlaceNotes: "備註", sight: "景點", restaurant: "餐廳", other: "其他",
 
   dates: "日期", flightDetails: "航班資料", hotelDetails: "飯店資料", departureDate: "出發日期", arrivalDate: "到達日期",
   noFlightDetails: "尚未新增航班資料", noHotelDetails: "尚未新增飯店資料",

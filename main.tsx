@@ -56,6 +56,11 @@ type ItineraryItem = {
   photo?: string; mapUrl?: string; transitToNext?: TransitLeg;
 };
 
+type OptionalStop = {
+  id: string; day: number; type: "site" | "restaurant" | "other"; title: string; location: string;
+  url: string; notes: string;
+};
+
 type Trip = {
   id: string; ownerId: string; ownerName: string; title: string; location: string;
   startDate: string; endDate: string; duration: number;
@@ -67,7 +72,7 @@ type Trip = {
   travelNotes: TravelNote[];
   bannerColor: string; bannerImage: string;
   members: string[]; expenses: Expense[];
-  packingList: PackingItem[]; itinerary: ItineraryItem[];
+  packingList: PackingItem[]; itinerary: ItineraryItem[]; optionalStops: OptionalStop[];
   createdAt: string;
   customLocation?: {name:string;lat:number;lon:number};
 };
@@ -416,6 +421,11 @@ function normTrip(i:unknown):Trip{
       mapUrl: (item as ItineraryItem).mapUrl ?? "",
       transitToNext: (item as ItineraryItem).transitToNext ?? { duration: "", details: "" },
     })),
+    optionalStops: Array.isArray((t as Partial<Trip>).optionalStops) ? (t as Partial<Trip>).optionalStops!.map((stop, index) => ({
+      id: stop.id ?? uid(`opt-${index}`), day: typeof stop.day === "number" ? stop.day : 1,
+      type: stop.type === "restaurant" || stop.type === "other" ? stop.type : "site",
+      title: stop.title ?? "", location: stop.location ?? "", url: stop.url ?? "", notes: stop.notes ?? "",
+    })) : [],
     createdAt:t.createdAt??new Date().toISOString(),
     customLocation:t.customLocation };
 }
@@ -472,6 +482,174 @@ function tripHotelSummary(trip:Trip){
     return [trip.hotels.length > 1 ? `${trip.hotels.length} stays` : "1 stay", firstHotel.hotelName, firstHotel.roomType].filter(Boolean);
   }
   return [trip.hotelName, trip.roomType, trip.hotelAddress].filter(Boolean);
+}
+
+function escapeHtml(value:string){
+  return value
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;")
+    .replace(/'/g,"&#39;");
+}
+
+function pdfList(items:string[]){
+  return items.length ? `<ul>${items.map(item=>`<li>${escapeHtml(item)}</li>`).join("")}</ul>` : '<p class="muted">—</p>';
+}
+
+function exportTripToPdf(trip:Trip, members:Profile[], t:(k:TKey)=>string){
+  const itineraryByDay = Array.from({length:trip.duration}, (_,index)=>index+1).map(day=>({
+    day,
+    items: trip.itinerary.filter(item=>item.day===day).sort((a,b)=>a.order-b.order),
+    optionalStops: trip.optionalStops.filter(stop=>stop.day===day),
+  }));
+  const expensesTotal = trip.expenses.reduce((sum, expense)=>sum + expense.amount, 0);
+  const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(trip.title)} PDF</title>
+    <style>
+      :root { color-scheme: light; }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 32px; font-family: Inter, Arial, sans-serif; color: #0f172a; background: #f8fafc; }
+      h1,h2,h3,p { margin: 0; }
+      .hero { padding: 28px; border-radius: 24px; background: linear-gradient(135deg, #1d4ed8, #7c3aed); color: white; }
+      .hero p { margin-top: 8px; opacity: 0.92; }
+      .section { margin-top: 22px; background: white; border: 1px solid #dbe3f0; border-radius: 20px; padding: 20px; page-break-inside: avoid; }
+      .section-title { font-size: 20px; font-weight: 800; margin-bottom: 14px; }
+      .grid { display: grid; gap: 12px; }
+      .grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .tile { border: 1px solid #dbe3f0; border-radius: 16px; padding: 14px; background: #f8fafc; min-height: 88px; }
+      .label { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: #64748b; margin-bottom: 6px; }
+      .value { font-size: 15px; line-height: 1.5; font-weight: 600; white-space: pre-wrap; word-break: break-word; }
+      .muted { color: #64748b; font-size: 13px; }
+      .card { border: 1px solid #dbe3f0; border-radius: 18px; padding: 16px; margin-top: 12px; page-break-inside: avoid; }
+      .row { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+      .route { font-size: 18px; font-weight: 800; margin-top: 6px; }
+      .pill { display: inline-block; border-radius: 999px; padding: 6px 10px; background: #dbeafe; color: #1d4ed8; font-size: 12px; font-weight: 700; }
+      ul { margin: 10px 0 0; padding-left: 18px; }
+      li { margin-top: 6px; line-height: 1.45; }
+      .day { margin-top: 18px; border-top: 1px solid #e2e8f0; padding-top: 18px; }
+      .day:first-of-type { margin-top: 0; border-top: 0; padding-top: 0; }
+      @media print { body { background: white; padding: 18px; } .section { break-inside: avoid; } }
+    </style>
+  </head>
+  <body>
+    <section class="hero">
+      <h1>${escapeHtml(trip.title)}</h1>
+      <p>${escapeHtml(trip.location)} · ${escapeHtml(fmtDate(trip.startDate))} - ${escapeHtml(fmtDate(trip.endDate))} · ${trip.duration} ${escapeHtml(t("days"))}</p>
+      <p>${trip.members.length} ${escapeHtml(t("members"))} · ${escapeHtml(t(getTripStatus(trip)))}</p>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">${escapeHtml(t("overview"))}</h2>
+      <div class="grid cols-3">
+        <div class="tile"><div class="label">${escapeHtml(t("dates"))}</div><div class="value">${escapeHtml(fmtDate(trip.startDate))}
+${escapeHtml(fmtDate(trip.endDate))}</div></div>
+        <div class="tile"><div class="label">${escapeHtml(t("flightLegs"))}</div><div class="value">${escapeHtml(String(trip.flightLegs.length || 0))}</div></div>
+        <div class="tile"><div class="label">${escapeHtml(t("hotelStays"))}</div><div class="value">${escapeHtml(String(trip.hotels.length || 0))}</div></div>
+        <div class="tile"><div class="label">${escapeHtml(t("members"))}</div><div class="value">${escapeHtml(members.map(member=>dn(member)).join(", ") || "—")}</div></div>
+        <div class="tile"><div class="label">${escapeHtml(t("generalNotes"))}</div><div class="value">${escapeHtml(trip.notes || "—")}</div></div>
+        <div class="tile"><div class="label">${escapeHtml(t("optionalPlaces"))}</div><div class="value">${escapeHtml(String(trip.optionalStops.length || 0))}</div></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">${escapeHtml(t("flightLegs"))}</h2>
+      ${trip.flightLegs.length ? trip.flightLegs.map((leg,index)=>`<div class="card">
+        <div class="row">
+          <div>
+            <div class="label">${escapeHtml(t("flightDetails"))} ${index+1}</div>
+            <div class="route">${escapeHtml([leg.airline, leg.flightNumber].filter(Boolean).join(" ") || `${t("flightDetails")} ${index+1}`)}</div>
+            <p class="muted">${escapeHtml(`${leg.departureAirport || "—"} → ${leg.arrivalAirport || "—"}`)}</p>
+          </div>
+          <span class="pill">${escapeHtml(t("flightLegs"))}</span>
+        </div>
+        <div class="grid cols-2" style="margin-top:12px;">
+          <div class="tile"><div class="label">${escapeHtml(t("departureTime"))}</div><div class="value">${escapeHtml(leg.departureTime ? fmtDate(leg.departureTime) : "—")}</div></div>
+          <div class="tile"><div class="label">${escapeHtml(t("arrivalTime"))}</div><div class="value">${escapeHtml(leg.arrivalTime ? fmtDate(leg.arrivalTime) : "—")}</div></div>
+          <div class="tile"><div class="label">${escapeHtml(t("terminal"))}</div><div class="value">${escapeHtml(leg.terminal || "—")}</div></div>
+          <div class="tile"><div class="label">${escapeHtml(t("bookingReference"))}</div><div class="value">${escapeHtml(leg.bookingReference || "—")}</div></div>
+        </div>
+        ${leg.notes ? `<p style="margin-top:12px" class="muted">${escapeHtml(leg.notes)}</p>` : ""}
+      </div>`).join("") : '<p class="muted">—</p>'}
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">${escapeHtml(t("hotelStays"))}</h2>
+      ${trip.hotels.length ? trip.hotels.map((hotel,index)=>`<div class="card">
+        <div class="row">
+          <div>
+            <div class="label">${escapeHtml(t("hotelDetails"))} ${index+1}</div>
+            <div class="route">${escapeHtml(hotel.hotelName || `${t("hotelDetails")} ${index+1}`)}</div>
+            <p class="muted">${escapeHtml(hotel.hotelAddress || "—")}</p>
+          </div>
+          <span class="pill" style="background:#dcfce7;color:#15803d;">${escapeHtml(t("hotelStays"))}</span>
+        </div>
+        <div class="grid cols-2" style="margin-top:12px;">
+          <div class="tile"><div class="label">${escapeHtml(t("roomType"))}</div><div class="value">${escapeHtml(hotel.roomType || "—")}</div></div>
+          <div class="tile"><div class="label">${escapeHtml(t("propertyContact"))}</div><div class="value">${escapeHtml(hotel.contact || "—")}</div></div>
+          <div class="tile"><div class="label">${escapeHtml(t("checkIn"))}</div><div class="value">${escapeHtml(hotel.checkIn ? fmtDate(hotel.checkIn) : "—")}</div></div>
+          <div class="tile"><div class="label">${escapeHtml(t("checkOut"))}</div><div class="value">${escapeHtml(hotel.checkOut ? fmtDate(hotel.checkOut) : "—")}</div></div>
+          <div class="tile"><div class="label">${escapeHtml(t("confirmationCode"))}</div><div class="value">${escapeHtml(hotel.confirmationCode || "—")}</div></div>
+        </div>
+        ${hotel.notes ? `<p style="margin-top:12px" class="muted">${escapeHtml(hotel.notes)}</p>` : ""}
+      </div>`).join("") : '<p class="muted">—</p>'}
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">${escapeHtml(t("itinerary"))}</h2>
+      ${itineraryByDay.map(({day, items, optionalStops})=>`<div class="day">
+        <h3>${escapeHtml(t("day"))} ${day}</h3>
+        ${items.length ? items.map(item=>`<div class="card">
+          <div class="row">
+            <div>
+              <div class="label">${escapeHtml(item.startTime)} - ${escapeHtml(item.endTime)}${(item.endDayOffset ?? 0) > 0 ? ` (+${item.endDayOffset}d)` : ""}</div>
+              <div class="route">${escapeHtml(item.title)}</div>
+              <p class="muted">${escapeHtml(item.stopLocation || "—")}</p>
+            </div>
+            <span class="pill">${escapeHtml(item.transport || "—")}</span>
+          </div>
+          ${item.details ? `<p style="margin-top:12px" class="muted">${escapeHtml(item.details)}</p>` : ""}
+          ${(item.transitToNext?.duration || item.transitToNext?.details) ? `<div class="tile" style="margin-top:12px"><div class="label">${escapeHtml(t("transitTime"))}</div><div class="value">${escapeHtml(item.transitToNext?.duration || "—")}</div><p class="muted" style="margin-top:8px">${escapeHtml(item.transitToNext?.details || "")}</p></div>` : ""}
+        </div>`).join("") : `<p class="muted">${escapeHtml(t("noItineraryDesc"))}</p>`}
+        <div class="card">
+          <div class="label">${escapeHtml(t("optionalPlaces"))}</div>
+          ${optionalStops.length ? pdfList(optionalStops.map(stop=>`${stop.title} (${t(stop.type === "site" ? "sight" : stop.type === "restaurant" ? "restaurant" : "other")})${stop.location ? ` — ${stop.location}` : ""}${stop.notes ? ` • ${stop.notes}` : ""}${stop.url ? ` • ${stop.url}` : ""}`)) : `<p class="muted">${escapeHtml(t("noOptionalPlacesDesc"))}</p>`}
+        </div>
+      </div>`).join("")}
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">${escapeHtml(t("travelNotes"))}</h2>
+      ${trip.travelNotes.length ? pdfList(trip.travelNotes.map(note=>`${note.authorName} — ${new Date(note.createdAt).toLocaleString()}${note.text ? ` • ${note.text}` : ""}`)) : `<p class="muted">${escapeHtml(t("noNotesDesc"))}</p>`}
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">${escapeHtml(t("expenses"))}</h2>
+      <div class="grid cols-2">
+        <div class="tile"><div class="label">${escapeHtml(t("totalSpent"))}</div><div class="value">${escapeHtml(fmtCur(expensesTotal, trip.expenses[0]?.currency || "USD"))}</div></div>
+        <div class="tile"><div class="label">${escapeHtml(t("members"))}</div><div class="value">${escapeHtml(String(trip.members.length))}</div></div>
+      </div>
+      ${trip.expenses.length ? pdfList(trip.expenses.map(expense=>`${fmtDate(expense.date)} • ${expense.title} • ${fmtCur(expense.amount, expense.currency)} • ${expense.category}`)) : `<p class="muted" style="margin-top:12px">${escapeHtml(t("noExpensesDesc"))}</p>`}
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">${escapeHtml(t("luggage"))}</h2>
+      ${trip.packingList.length ? pdfList(trip.packingList.map(item=>`${item.label} (${item.category})${item.packed ? " ✓" : ""}`)) : `<p class="muted">${escapeHtml(t("noLuggageDesc"))}</p>`}
+    </section>
+  </body>
+</html>`;
+
+  const win = window.open("", "_blank", "noopener,noreferrer,width=1080,height=900");
+  if(!win) return;
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+  setTimeout(()=>win.print(), 250);
 }
 
 function monthLabel(index:number){
@@ -935,7 +1113,7 @@ function AuthModal({open,mode,th,t,onClose,onSignIn,onSignUp,onToggle}:{
         <Btn th={th} v="sec" type="button" onClick={onToggle}>{t("signUp")}</Btn>
       </div>
     </form>:<form onSubmit={handleSignUp} className="space-y-4">
-      <div className={cx("rounded-2xl border p-4",th==="dark"?"border-cyan-400/30 bg-cyan-500/10":"border-blue-200 bg-blue-50")}>
+      <div className={cx("rounded-2xl border p-3.5",th==="dark"?"border-cyan-400/30 bg-cyan-500/10":"border-blue-200 bg-blue-50")}>
         <p className={cx("text-sm font-semibold mb-2",th==="dark"?"text-cyan-200":"text-blue-700")}>{t("signupInstructions")}</p>
         <ul className={cx("text-sm list-disc pl-5 space-y-1",th==="dark"?"text-slate-300":"text-slate-700")}>
           <li>{t("signupRuleName")}</li>
@@ -1093,9 +1271,19 @@ function Dashboard({user,trips,th,t,onUpdate,onSelectTrip}:{user:Profile;trips:T
 }
 
 function InfoRow({label,value,th}:{label:string;value:string;th:ThemeMode}){
-  return <div className="flex justify-between">
-    <span className={cx(th==="dark"?"text-slate-400":"text-slate-500")}>{label}</span>
-    <span className="font-medium">{value}</span>
+  return <div className={cx("rounded-2xl border p-3.5",th==="dark"?"border-white/10 bg-white/[0.04]":"border-slate-200 bg-white")}>
+    <p className={cx("text-xs font-semibold uppercase tracking-[0.16em]",th==="dark"?"text-slate-400":"text-slate-500")}>{label}</p>
+    <p className={cx("mt-2 text-sm font-semibold leading-6 break-words whitespace-pre-wrap",th==="dark"?"text-slate-100":"text-slate-900")}>{value}</p>
+  </div>;
+}
+
+function DetailHeader({title,subtitle,badge,th}:{title:string;subtitle:string;badge:string;th:ThemeMode}){
+  return <div className="flex flex-wrap items-start justify-between gap-4">
+    <div className="min-w-0">
+      <p className="text-2xl font-bold break-words">{title}</p>
+      <p className={cx("mt-2 text-sm leading-6 break-words",th==="dark"?"text-slate-300":"text-slate-600")}>{subtitle}</p>
+    </div>
+    <Badge label={badge} th={th}/>
   </div>;
 }
 
@@ -1231,7 +1419,7 @@ function TripDetail({trip,user,profiles,siteCfg,th,t,onBack,onUpdate,onAddExp,on
 
     {tab==="overview"&&<TripOverview trip={trip} user={user} profiles={profiles} siteCfg={siteCfg} th={th} t={t} onUpdate={onUpdate}/>} 
     {tab==="travelers"&&<TripTravelers trip={trip} profiles={profiles} th={th} t={t}/>} 
-    {tab==="itinerary"&&<TripItinerary trip={trip} th={th} t={t} onUpdate={onUpdateItin}/>}
+    {tab==="itinerary"&&<TripItinerary trip={trip} th={th} t={t} onUpdate={onUpdateItin} onTripUpdate={onUpdate}/>}
     {tab==="expenses"&&<TripExpenses trip={trip} user={user} profiles={profiles} th={th} t={t} onAdd={onAddExp} onRemove={onRemoveExp}/>}
     {tab==="luggage"&&<TripLuggage trip={trip} siteCfg={siteCfg} th={th} t={t} onAdd={onAddPack} onToggle={onTogglePack} onRemove={onRemovePack}/>}
     {tab==="settings"&&<TripSettings trip={trip} isOwner={isOwner} siteCfg={siteCfg} th={th} t={t} onUpdate={onUpdate}/>}
@@ -1298,7 +1486,7 @@ function TripOverview({trip,user,profiles,siteCfg,th,t,onUpdate}:{trip:Trip;user
 
   const removeNote=(nid:string)=>onUpdate(trip.id,{travelNotes:trip.travelNotes.filter(n=>n.id!==nid)});
 
-  return <div className="grid xl:grid-cols-[1.35fr_.92fr] gap-6">
+  return <div className="grid xl:grid-cols-[minmax(0,1.65fr)_minmax(280px,340px)] gap-6">
     <div className="space-y-6">
       <Card th={th} className="p-8 lg:p-10">
         <div className="grid lg:grid-cols-[1.15fr_.85fr] gap-8">
@@ -1306,6 +1494,7 @@ function TripOverview({trip,user,profiles,siteCfg,th,t,onUpdate}:{trip:Trip;user
             <div className="flex flex-wrap items-center gap-3">
               <Badge label={`${t("status")}: ${t(status)}`} th={th} color={getStatusColor(status)}/>
               <Badge label={`${trip.duration} ${t("days")}`} th={th} color="blue"/>
+              <Btn th={th} v="sec" sz="sm" onClick={()=>exportTripToPdf(trip, memberProfiles, t)}>🧾 {t("exportPdf")}</Btn>
             </div>
             <div>
               <p className={cx("text-sm uppercase tracking-[0.22em] mb-3",th==="dark"?"text-cyan-300":"text-blue-700")}>{t("overview")}</p>
@@ -1354,7 +1543,7 @@ function TripOverview({trip,user,profiles,siteCfg,th,t,onUpdate}:{trip:Trip;user
         </div>
       </Card>
 
-      <div className="grid gap-6 2xl:grid-cols-2">
+      <div className="grid gap-6 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <Card th={th} className="p-8 space-y-5">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -1364,21 +1553,23 @@ function TripOverview({trip,user,profiles,siteCfg,th,t,onUpdate}:{trip:Trip;user
             <Badge label={`${flightLegs.length}`} th={th} color="blue"/>
           </div>
           {flightLegs.length===0?<p className={cx("text-sm",th==="dark"?"text-slate-400":"text-slate-500")}>{t("noFlightDetails")}</p>
-          :<div className="space-y-5">{flightLegs.map((leg,index)=><div key={leg.id} className={cx("rounded-[1.75rem] border p-6",th==="dark"?"border-white/8 bg-white/[0.03]":"border-slate-200 bg-slate-50")}>
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <p className="text-2xl font-bold">{[leg.airline, leg.flightNumber].filter(Boolean).join(" ") || `${t("flightDetails")} ${index+1}`}</p>
-                <p className={cx("mt-2 text-base",th==="dark"?"text-slate-300":"text-slate-600")}>{leg.departureAirport || "-"}{" -> "}{leg.arrivalAirport || "-"}</p>
-              </div>
-              <Badge label={`${t("flightDetails")} ${index+1}`} th={th} color="blue"/>
-            </div>
-            <div className="mt-5 grid md:grid-cols-2 gap-3 text-sm">
+          :<div className="space-y-5">{flightLegs.map((leg,index)=><div key={leg.id} className={cx("rounded-[1.9rem] border p-7 min-h-[20rem]",th==="dark"?"border-white/8 bg-white/[0.03]":"border-slate-200 bg-slate-50")}>
+            <DetailHeader
+              title={[leg.airline, leg.flightNumber].filter(Boolean).join(" ") || `${t("flightDetails")} ${index+1}`}
+              subtitle={`${leg.departureAirport || "—"} → ${leg.arrivalAirport || "—"}`}
+              badge={`${t("flightDetails")} ${index+1}`}
+              th={th}
+            />
+            <div className="mt-5 grid gap-4 xl:grid-cols-2">
               <InfoRow label={t("departureTime")} value={leg.departureTime ? fmtDate(leg.departureTime) : "—"} th={th}/>
               <InfoRow label={t("arrivalTime")} value={leg.arrivalTime ? fmtDate(leg.arrivalTime) : "—"} th={th}/>
               <InfoRow label={t("terminal")} value={leg.terminal || "—"} th={th}/>
               <InfoRow label={t("bookingReference")} value={leg.bookingReference || "—"} th={th}/>
             </div>
-            {leg.notes&&<p className={cx("mt-4 text-sm leading-6",th==="dark"?"text-slate-300":"text-slate-600")}>{leg.notes}</p>}
+            {leg.notes&&<div className={cx("mt-5 rounded-2xl border p-4",th==="dark"?"border-white/10 bg-white/[0.04]":"border-slate-200 bg-white")}>
+              <p className={cx("text-xs font-semibold uppercase tracking-[0.16em]",th==="dark"?"text-slate-400":"text-slate-500")}>{t("legNotes")}</p>
+              <p className={cx("mt-2 text-sm leading-6 break-words whitespace-pre-wrap",th==="dark"?"text-slate-200":"text-slate-700")}>{leg.notes}</p>
+            </div>}
           </div>)}</div>}
         </Card>
 
@@ -1391,22 +1582,24 @@ function TripOverview({trip,user,profiles,siteCfg,th,t,onUpdate}:{trip:Trip;user
             <Badge label={`${hotels.length}`} th={th} color="green"/>
           </div>
           {hotels.length===0?<p className={cx("text-sm",th==="dark"?"text-slate-400":"text-slate-500")}>{t("noHotelDetails")}</p>
-          :<div className="space-y-5">{hotels.map((hotel,index)=><div key={hotel.id} className={cx("rounded-[1.75rem] border p-6",th==="dark"?"border-white/8 bg-white/[0.03]":"border-slate-200 bg-slate-50")}>
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <p className="text-2xl font-bold">{hotel.hotelName || `${t("hotelDetails")} ${index+1}`}</p>
-                <p className={cx("mt-2 text-base",th==="dark"?"text-slate-300":"text-slate-600")}>{hotel.hotelAddress || "—"}</p>
-              </div>
-              <Badge label={`${t("hotelDetails")} ${index+1}`} th={th} color="green"/>
-            </div>
-            <div className="mt-5 grid md:grid-cols-2 gap-3 text-sm">
+          :<div className="space-y-5">{hotels.map((hotel,index)=><div key={hotel.id} className={cx("rounded-[1.9rem] border p-7 min-h-[20rem]",th==="dark"?"border-white/8 bg-white/[0.03]":"border-slate-200 bg-slate-50")}>
+            <DetailHeader
+              title={hotel.hotelName || `${t("hotelDetails")} ${index+1}`}
+              subtitle={hotel.hotelAddress || "—"}
+              badge={`${t("hotelDetails")} ${index+1}`}
+              th={th}
+            />
+            <div className="mt-5 grid gap-4 xl:grid-cols-2">
               <InfoRow label={t("roomType")} value={hotel.roomType || "—"} th={th}/>
               <InfoRow label={t("propertyContact")} value={hotel.contact || "—"} th={th}/>
               <InfoRow label={t("checkIn")} value={hotel.checkIn ? fmtDate(hotel.checkIn) : "—"} th={th}/>
               <InfoRow label={t("checkOut")} value={hotel.checkOut ? fmtDate(hotel.checkOut) : "—"} th={th}/>
               <InfoRow label={t("confirmationCode")} value={hotel.confirmationCode || "—"} th={th}/>
             </div>
-            {hotel.notes&&<p className={cx("mt-4 text-sm leading-6",th==="dark"?"text-slate-300":"text-slate-600")}>{hotel.notes}</p>}
+            {hotel.notes&&<div className={cx("mt-5 rounded-2xl border p-4",th==="dark"?"border-white/10 bg-white/[0.04]":"border-slate-200 bg-white")}>
+              <p className={cx("text-xs font-semibold uppercase tracking-[0.16em]",th==="dark"?"text-slate-400":"text-slate-500")}>{t("stayNotes")}</p>
+              <p className={cx("mt-2 text-sm leading-6 break-words whitespace-pre-wrap",th==="dark"?"text-slate-200":"text-slate-700")}>{hotel.notes}</p>
+            </div>}
           </div>)}</div>}
         </Card>
       </div>
@@ -1448,11 +1641,11 @@ function TripOverview({trip,user,profiles,siteCfg,th,t,onUpdate}:{trip:Trip;user
       </Card>
     </div>
 
-    <Card th={th} className="sticky top-6 h-fit space-y-5 p-6">
+    <Card th={th} className="sticky top-6 h-fit space-y-4 p-5">
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className={cx("text-sm uppercase tracking-[0.2em]",th==="dark"?"text-slate-400":"text-slate-500")}>{t("weather")}</p>
-          <h3 className="mt-1 text-2xl font-bold">{trip.customLocation?.name||trip.location}</h3>
+          <h3 className="mt-1 text-xl font-bold leading-snug">{trip.customLocation?.name||trip.location}</h3>
         </div>
         <Btn th={th} v="sec" sz="sm" onClick={()=>void loadWeather()} disabled={loading}>{loading?t("loading"):t("refreshWeather")}</Btn>
       </div>
@@ -1463,10 +1656,10 @@ function TripOverview({trip,user,profiles,siteCfg,th,t,onUpdate}:{trip:Trip;user
         <div className={cx("rounded-[2rem] border p-6",th==="dark"?"border-white/8 bg-white/[0.04]":"border-slate-200 bg-slate-50")}>
           <div className="flex items-start justify-between gap-4">
             <div>
-              <p className="text-5xl font-black">{Math.round(weather.current.temp)}°</p>
+              <p className="text-4xl font-black">{Math.round(weather.current.temp)}°</p>
               <p className={cx("mt-1",th==="dark"?"text-slate-300":"text-slate-600")}>{weather.current.condition}</p>
             </div>
-            <span className="text-5xl">{weatherEmoji[weather.current.condition]||"🌍"}</span>
+            <span className="text-4xl">{weatherEmoji[weather.current.condition]||"🌍"}</span>
           </div>
           <div className={cx("mt-5 grid grid-cols-3 gap-3 text-sm",th==="dark"?"text-slate-300":"text-slate-600")}>
             <div><p className="opacity-60">H</p><p>{Math.round(weather.current.high)}°C</p></div>
@@ -1474,16 +1667,16 @@ function TripOverview({trip,user,profiles,siteCfg,th,t,onUpdate}:{trip:Trip;user
             <div><p className="opacity-60">Wind</p><p>{Math.round(weather.current.wind)} km/h</p></div>
           </div>
         </div>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-          {weather.forecast.map(day=><div key={day.date} className={cx("rounded-2xl border p-4",th==="dark"?"border-white/8 bg-white/[0.03]":"border-slate-200 bg-slate-50")}>
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+          {weather.forecast.map(day=><div key={day.date} className={cx("rounded-2xl border p-3.5",th==="dark"?"border-white/8 bg-white/[0.03]":"border-slate-200 bg-slate-50")}>
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="font-semibold">{formatForecastDate(day.date)}</p>
+                <p className="text-sm font-semibold">{formatForecastDate(day.date)}</p>
                 <p className={cx("text-sm mt-1",th==="dark"?"text-slate-400":"text-slate-500")}>{day.condition}</p>
               </div>
-              <span className="text-2xl">{weatherEmoji[day.condition]||"🌤️"}</span>
+              <span className="text-xl">{weatherEmoji[day.condition]||"🌤️"}</span>
             </div>
-            <p className={cx("mt-3 text-sm",th==="dark"?"text-slate-300":"text-slate-600")}>{Math.round(day.high)}° / {Math.round(day.low)}°</p>
+            <p className={cx("mt-2 text-xs",th==="dark"?"text-slate-300":"text-slate-600")}>{Math.round(day.high)}° / {Math.round(day.low)}°</p>
           </div>)}
         </div>
       </>}
@@ -1570,15 +1763,20 @@ function TripTravelers({trip,profiles,th,t}:{trip:Trip;profiles:Profile[];th:The
   </div>;
 }
 
-function TripItinerary({trip,th,t,onUpdate}:{trip:Trip;th:ThemeMode;t:(k:TKey)=>string;onUpdate:(tid:string,items:ItineraryItem[])=>void}){
+function TripItinerary({trip,th,t,onUpdate,onTripUpdate}:{trip:Trip;th:ThemeMode;t:(k:TKey)=>string;onUpdate:(tid:string,items:ItineraryItem[])=>void;onTripUpdate:(id:string,d:Partial<Trip>)=>void}){
   const emptyForm={startTime:"09:00",endTime:"10:00",endDayOffset:0,title:"",stopLocation:"",transport:"Walk",details:"",photo:"",mapUrl:""};
+  const emptyOptionalForm={day:1,type:"site" as OptionalStop["type"],title:"",location:"",url:"",notes:""};
+  const [activePane,setActivePane]=useState<"schedule"|"saved">("schedule");
   const [day,setDay]=useState(1);
   const [form,setForm]=useState(emptyForm);
   const [editId,setEditId]=useState<string|null>(null);
   const [transportEditId,setTransportEditId]=useState<string|null>(null);
   const [transportForm,setTransportForm]=useState({duration:"",details:""});
+  const [optionalForm,setOptionalForm]=useState(emptyOptionalForm);
+  const [optionalEditId,setOptionalEditId]=useState<string|null>(null);
 
   const dayItems=trip.itinerary.filter(it=>it.day===day).sort((a,b)=>a.order-b.order);
+  const optionalDayItems=trip.optionalStops.filter(stop=>stop.day===day);
   const nextOrder=(trip.itinerary.filter(it=>it.day===day).reduce((max,it)=>Math.max(max,it.order),0))+1;
   const totalItems=trip.itinerary.length;
   const photoCount=trip.itinerary.filter(it=>Boolean(it.photo)).length;
@@ -1671,6 +1869,7 @@ function TripItinerary({trip,th,t,onUpdate}:{trip:Trip;th:ThemeMode;t:(k:TKey)=>
     setForm({ startTime:it.startTime,endTime:it.endTime,endDayOffset:it.endDayOffset??0,title:it.title,stopLocation:it.stopLocation ?? "",transport:it.transport,details:it.details,photo:it.photo??"",mapUrl:it.mapUrl??"" });
     setEditId(it.id);
     setDay(it.day);
+    setActivePane("schedule");
   };
 
   const handlePhotoUpload=async(e:ChangeEvent<HTMLInputElement>)=>{
@@ -1698,13 +1897,39 @@ function TripItinerary({trip,th,t,onUpdate}:{trip:Trip;th:ThemeMode;t:(k:TKey)=>
     setTransportForm({duration:"",details:""});
   };
 
+  const saveOptionalStop=(e:React.FormEvent)=>{
+    e.preventDefault();
+    if(!optionalForm.title.trim()) return;
+    const normalized={...optionalForm, day:Math.min(Math.max(optionalForm.day,1),trip.duration)};
+    const next = optionalEditId
+      ? trip.optionalStops.map(stop=>stop.id===optionalEditId?{...stop,...normalized}:stop)
+      : [{id:uid("opt"),...normalized}, ...trip.optionalStops];
+    onTripUpdate(trip.id,{optionalStops:next});
+    setOptionalEditId(null);
+    setOptionalForm({...emptyOptionalForm,day});
+  };
+
+  const editOptionalStop=(stop:OptionalStop)=>{
+    setOptionalEditId(stop.id);
+    setOptionalForm({day:stop.day,type:stop.type,title:stop.title,location:stop.location,url:stop.url,notes:stop.notes});
+    setDay(stop.day);
+    setActivePane("saved");
+  };
+
+  const removeOptionalStop=(id:string)=>onTripUpdate(trip.id,{optionalStops:trip.optionalStops.filter(stop=>stop.id!==id)});
+
+  useEffect(()=>{
+    setOptionalForm(current=>current.day===day?current:{...current,day});
+  },[day]);
+
   return <div className="grid gap-6 lg:grid-cols-[1.45fr_.95fr]">
     <div className="space-y-5">
       <Card th={th} className="p-5 space-y-4">
-        <div className="grid sm:grid-cols-3 gap-3">
+        <div className="grid sm:grid-cols-4 gap-3">
           <div className={cx("rounded-2xl p-4",th==="dark"?"bg-white/[0.04]":"bg-slate-100")}><p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("itinerary")}</p><p className="mt-1 text-2xl font-bold">{totalItems}</p></div>
           <div className={cx("rounded-2xl p-4",th==="dark"?"bg-white/[0.04]":"bg-slate-100")}><p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("day")}</p><p className="mt-1 text-2xl font-bold">{day}/{trip.duration}</p></div>
           <div className={cx("rounded-2xl p-4",th==="dark"?"bg-white/[0.04]":"bg-slate-100")}><p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("itineraryPhoto")}</p><p className="mt-1 text-2xl font-bold">{photoCount}</p></div>
+          <div className={cx("rounded-2xl p-4",th==="dark"?"bg-white/[0.04]":"bg-slate-100")}><p className={cx("text-xs",th==="dark"?"text-slate-400":"text-slate-500")}>{t("optionalPlaces")}</p><p className="mt-1 text-2xl font-bold">{trip.optionalStops.length}</p></div>
         </div>
       </Card>
 
@@ -1713,7 +1938,9 @@ function TripItinerary({trip,th,t,onUpdate}:{trip:Trip;th:ThemeMode;t:(k:TKey)=>
           {Array.from({length:trip.duration},(_,i)=>i+1).map(d=><button key={d} onClick={()=>setDay(d)} className={cx("rounded-2xl px-4 py-2.5 font-medium whitespace-nowrap transition border",d===day?(th==="dark"?"bg-cyan-400 text-slate-950 border-cyan-300":"bg-slate-800 text-white border-slate-700"):(th==="dark"?"bg-white/5 text-slate-400 hover:bg-white/10 border-white/10":"bg-slate-100 text-slate-600 hover:bg-slate-200 border-slate-200"))}>{t("day")} {d}</button>)}
         </div>
 
-        {dayItems.length===0?<Empty icon="🗓️" title={t("noItinerary")} desc={t("noItineraryDesc")} th={th}/>:<div className="space-y-5">{dayItems.map((it,idx)=><div key={it.id} className="space-y-3 relative">
+        <Tabs tabs={[{id:"schedule",label:t("itinerarySchedule"),icon:"🗓️"},{id:"saved",label:t("optionalPlaces"),icon:"📌"}]} active={activePane} onChange={setActivePane} th={th}/>
+
+        {activePane==="schedule" ? (dayItems.length===0?<div className="mt-6"><Empty icon="🗓️" title={t("noItinerary")} desc={t("noItineraryDesc")} th={th}/></div>:<div className="mt-6 space-y-5">{dayItems.map((it,idx)=><div key={it.id} className="space-y-3 relative">
           {idx<dayItems.length-1&&<span className={cx("absolute left-[18px] top-14 h-[calc(100%-1.2rem)] w-px",th==="dark"?"bg-white/10":"bg-slate-200")}/>}<Card th={th} className={cx("p-5 rounded-3xl",it.transport==="Flight"?(th==="dark"?"bg-indigo-500/10 border-indigo-400/40":"bg-indigo-50 border-indigo-200"):"")}>
             <div className="flex items-start gap-4">
               <div className="flex flex-col gap-1"><button onClick={()=>move(idx,-1)} disabled={idx===0} className="text-lg opacity-60 hover:opacity-100 disabled:opacity-20">▲</button><button onClick={()=>move(idx,1)} disabled={idx===dayItems.length-1} className="text-lg opacity-60 hover:opacity-100 disabled:opacity-20">▼</button></div>
@@ -1745,13 +1972,35 @@ function TripItinerary({trip,th,t,onUpdate}:{trip:Trip;th:ThemeMode;t:(k:TKey)=>
               <div className="flex gap-2"><button onClick={()=>edit(it)} className={cx("rounded-full px-2.5 py-1 text-sm",th==="dark"?"bg-white/10 hover:bg-white/20":"bg-slate-100 hover:bg-slate-200")}>✏️</button><button onClick={()=>remove(it.id)} className={cx("rounded-full px-2.5 py-1 text-sm text-rose-400",th==="dark"?"bg-rose-500/10 hover:bg-rose-500/20":"bg-rose-50 hover:bg-rose-100")}>✕</button></div>
             </div>
           </Card>
-        </div>)}</div>}
+        </div>)}</div>) : (<div className="mt-6 space-y-4">
+          {optionalDayItems.length===0?<Empty icon="📌" title={t("noOptionalPlaces")} desc={t("noOptionalPlacesDesc")} th={th}/>:optionalDayItems.map(stop=><Card key={stop.id} th={th} className="p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-lg font-bold break-words">{stop.title}</p>
+                  <Badge label={t(stop.type === "site" ? "sight" : stop.type === "restaurant" ? "restaurant" : "other")} th={th} color={stop.type === "restaurant" ? "amber" : stop.type === "other" ? "slate" : "green"}/>
+                </div>
+                <p className={cx("mt-2 text-sm",th==="dark"?"text-cyan-300":"text-blue-700")}>{stop.location || "—"}</p>
+                {stop.notes&&<p className={cx("mt-2 text-sm leading-6 break-words whitespace-pre-wrap",th==="dark"?"text-slate-300":"text-slate-600")}>{stop.notes}</p>}
+                {stop.url&&<a href={stop.url} target="_blank" rel="noreferrer" className={cx("mt-3 inline-flex text-sm font-semibold underline",th==="dark"?"text-cyan-300":"text-blue-700")}>{stop.url}</a>}
+              </div>
+              <div className="flex gap-2">
+                <Btn th={th} v="sec" sz="sm" onClick={()=>editOptionalStop(stop)}>{t("edit")}</Btn>
+                <Btn th={th} v="danger" sz="sm" onClick={()=>removeOptionalStop(stop.id)}>{t("remove")}</Btn>
+              </div>
+            </div>
+          </Card>)}
+        </div>)}
       </Card>
     </div>
 
     <Card th={th} className="p-6 h-fit lg:sticky lg:top-6">
-      <h3 className="mb-4 text-xl font-bold">{editId?t("edit"):t("addActivity")}</h3>
-      <form onSubmit={saveActivity} className="space-y-3">
+      <div className="mb-4">
+        <h3 className="text-xl font-bold">{activePane==="schedule" ? (editId?t("edit"):t("addActivity")) : (optionalEditId?t("editOptionalPlace"):t("addOptionalPlace"))}</h3>
+        <p className={cx("mt-2 text-sm",th==="dark"?"text-slate-400":"text-slate-500")}>{activePane==="schedule" ? t("noItineraryDesc") : t("optionalPlacesDesc")}</p>
+      </div>
+
+      {activePane==="schedule" ? <form onSubmit={saveActivity} className="space-y-3">
         <Input th={th} label={t("startTime")} type="time" value={form.startTime} onChange={e=>setForm(f=>({...f,startTime:e.target.value}))}/>
         <Input th={th} label={t("endTime")} type="time" value={form.endTime} onChange={e=>setForm(f=>({...f,endTime:e.target.value}))}/>
         <Input th={th} label={t("endDayOffset")} type="number" min={0} value={form.endDayOffset} onChange={e=>setForm(f=>({...f,endDayOffset:Number(e.target.value)||0}))}/>
@@ -1768,7 +2017,20 @@ function TripItinerary({trip,th,t,onUpdate}:{trip:Trip;th:ThemeMode;t:(k:TKey)=>
         </div>
         <Btn th={th} type="submit">{editId?t("save"):t("add")}</Btn>
         {editId&&<Btn th={th} v="sec" type="button" onClick={()=>{setEditId(null);setForm(emptyForm);}}>{t("cancel")}</Btn>}
-      </form>
+      </form> : <form onSubmit={saveOptionalStop} className="space-y-3">
+        <Input th={th} label={t("day")} type="number" min={1} max={trip.duration} value={optionalForm.day} onChange={e=>setOptionalForm(f=>({...f,day:Number(e.target.value)||1}))}/>
+        <Select th={th} label={t("placeType")} value={optionalForm.type} onChange={e=>setOptionalForm(f=>({...f,type:e.target.value as OptionalStop["type"]}))}>
+          <option value="site">{t("sight")}</option>
+          <option value="restaurant">{t("restaurant")}</option>
+          <option value="other">{t("other")}</option>
+        </Select>
+        <Input th={th} label={t("placeName")} value={optionalForm.title} onChange={e=>setOptionalForm(f=>({...f,title:e.target.value}))}/>
+        <Input th={th} label={t("optionalLocation")} value={optionalForm.location} onChange={e=>setOptionalForm(f=>({...f,location:e.target.value}))}/>
+        <Input th={th} label={t("reservationLink")} value={optionalForm.url} onChange={e=>setOptionalForm(f=>({...f,url:e.target.value}))}/>
+        <Textarea th={th} label={t("optionalPlaceNotes")} value={optionalForm.notes} onChange={e=>setOptionalForm(f=>({...f,notes:e.target.value}))}/>
+        <Btn th={th} type="submit">{optionalEditId?t("save"):t("saveOptionalPlace")}</Btn>
+        {optionalEditId&&<Btn th={th} v="sec" type="button" onClick={()=>{setOptionalEditId(null);setOptionalForm({...emptyOptionalForm,day});}}>{t("cancel")}</Btn>}
+      </form>}
     </Card>
   </div>;
 }
@@ -2600,7 +2862,7 @@ export function App(){
       hotelName:"",hotelAddress:"",roomType:"",checkIn:"",checkOut:"",confirmationCode:"",transportMode:"Transit",notes:"",travelNotes:[],
       flightLegs:[],hotels:[],
       bannerColor:"#2563eb",bannerImage:"",members:[user.id],expenses:[],packingList:packing,
-      itinerary:[],createdAt:new Date().toISOString(),
+      itinerary:[],optionalStops:[],createdAt:new Date().toISOString(),
     };
     setTrips(c=>[trip,...c]);
   };
