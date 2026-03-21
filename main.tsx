@@ -643,13 +643,42 @@ ${escapeHtml(fmtDate(trip.endDate))}</div></div>
   </body>
 </html>`;
 
-  const win = window.open("", "_blank", "noopener,noreferrer,width=1080,height=900");
-  if(!win) return;
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
-  win.focus();
-  setTimeout(()=>win.print(), 250);
+  const printFrame = document.createElement("iframe");
+  printFrame.setAttribute("aria-hidden", "true");
+  printFrame.style.position = "fixed";
+  printFrame.style.right = "0";
+  printFrame.style.bottom = "0";
+  printFrame.style.width = "0";
+  printFrame.style.height = "0";
+  printFrame.style.border = "0";
+
+  const cleanup = () => {
+    window.setTimeout(() => {
+      printFrame.remove();
+    }, 400);
+  };
+
+  printFrame.onload = () => {
+    const frameWindow = printFrame.contentWindow;
+    if(!frameWindow){
+      cleanup();
+      return;
+    }
+
+    const handleAfterPrint = () => {
+      cleanup();
+      frameWindow.removeEventListener("afterprint", handleAfterPrint);
+    };
+
+    frameWindow.addEventListener("afterprint", handleAfterPrint);
+    window.setTimeout(() => {
+      frameWindow.focus();
+      frameWindow.print();
+    }, 350);
+  };
+
+  document.body.appendChild(printFrame);
+  printFrame.srcdoc = html;
 }
 
 function monthLabel(index:number){
