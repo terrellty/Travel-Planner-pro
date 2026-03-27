@@ -8,5 +8,5 @@ workers_dev = true
 [[d1_databases]]
 binding = "AI_STORAGE_DB"
 database_name = "travel-planner-ai-storage"
-database_id = "<your_d1_database_id>"
+database_id = "f46d6590-0fec-4df0-b31e-49dbf4b25476"
 # preview_database_id = "<your_d1_preview_database_id>"
