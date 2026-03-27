@@ -2,8 +2,7 @@
 // Supports:
 // 1) Dedicated Web Worker message API (in-memory Map)
 // 2) Service Worker message API (in-memory Map)
-// 3) Cloudflare Worker Fetch API with optional KV persistence via env.AI_STORAGE
-//    or env.KV_BINDING (legacy/alternate binding name)
+// 3) Cloudflare Worker Fetch API with persistent D1 storage via env.AI_STORAGE_DB.
 
 const memoryStore = new Map();
 
@@ -79,47 +78,105 @@ function parseStoredValue(raw) {
   }
 }
 
-function createKVAdapter(kv) {
+
+function createD1Adapter(db) {
+  let schemaReady = false;
+
+  async function ensureSchema() {
+    if (schemaReady) return;
+
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS ai_storage (
+        storage_key TEXT PRIMARY KEY,
+        storage_value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_ai_storage_updated_at ON ai_storage(updated_at);
+    `);
+
+    schemaReady = true;
+  }
+
   return {
     async set(key, value) {
-      await kv.put(key, JSON.stringify(value));
+      await ensureSchema();
+      const now = new Date().toISOString();
+      await db
+        .prepare(
+          `INSERT INTO ai_storage (storage_key, storage_value, updated_at)
+           VALUES (?1, ?2, ?3)
+           ON CONFLICT(storage_key) DO UPDATE
+           SET storage_value=excluded.storage_value, updated_at=excluded.updated_at`
+        )
+        .bind(key, JSON.stringify(value), now)
+        .run();
+
       return { key, value };
     },
     async get(key) {
-      const raw = await kv.get(key);
-      return { key, value: parseStoredValue(raw), exists: raw !== null };
+      await ensureSchema();
+      const row = await db
+        .prepare('SELECT storage_value FROM ai_storage WHERE storage_key = ?1 LIMIT 1')
+        .bind(key)
+        .first();
+
+      if (!row) return { key, value: undefined, exists: false };
+      return { key, value: parseStoredValue(row.storage_value), exists: true };
     },
     async delete(key) {
-      await kv.delete(key);
-      return { key, deleted: true };
+      await ensureSchema();
+      const result = await db.prepare('DELETE FROM ai_storage WHERE storage_key = ?1').bind(key).run();
+      return { key, deleted: Number(result.meta?.changes ?? 0) > 0 };
     },
     async has(key) {
-      const raw = await kv.get(key);
-      return { key, exists: raw !== null };
+      await ensureSchema();
+      const row = await db
+        .prepare('SELECT 1 AS exists_value FROM ai_storage WHERE storage_key = ?1 LIMIT 1')
+        .bind(key)
+        .first();
+      return { key, exists: Boolean(row) };
     },
     async keys() {
-      const listed = await kv.list();
-      return { keys: listed.keys.map((item) => item.name) };
+      await ensureSchema();
+      const rows = await db.prepare('SELECT storage_key FROM ai_storage ORDER BY storage_key ASC').all();
+      return { keys: (rows.results ?? []).map((item) => item.storage_key) };
     },
     async values() {
-      const listed = await kv.list();
-      const values = await Promise.all(listed.keys.map((item) => kv.get(item.name).then(parseStoredValue)));
-      return { values };
+      await ensureSchema();
+      const rows = await db.prepare('SELECT storage_value FROM ai_storage ORDER BY storage_key ASC').all();
+      return { values: (rows.results ?? []).map((item) => parseStoredValue(item.storage_value)) };
     },
     async entries() {
-      const listed = await kv.list();
-      const entries = await Promise.all(
-        listed.keys.map(async (item) => [item.name, parseStoredValue(await kv.get(item.name))])
-      );
-      return { entries };
+      await ensureSchema();
+      const rows = await db
+        .prepare('SELECT storage_key, storage_value FROM ai_storage ORDER BY storage_key ASC')
+        .all();
+      return {
+        entries: (rows.results ?? []).map((item) => [item.storage_key, parseStoredValue(item.storage_value)]),
+      };
     },
     async clear() {
-      const listed = await kv.list();
-      await Promise.all(listed.keys.map((item) => kv.delete(item.name)));
+      await ensureSchema();
+      await db.prepare('DELETE FROM ai_storage').run();
       return { cleared: true };
     },
     async bulkSet(entries) {
-      await Promise.all(entries.map(([k, v]) => kv.put(k, JSON.stringify(v))));
+      await ensureSchema();
+      if (entries.length === 0) return { count: 0 };
+
+      const now = new Date().toISOString();
+      const statements = entries.map(([entryKey, entryValue]) =>
+        db
+          .prepare(
+            `INSERT INTO ai_storage (storage_key, storage_value, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(storage_key) DO UPDATE
+             SET storage_value=excluded.storage_value, updated_at=excluded.updated_at`
+          )
+          .bind(entryKey, JSON.stringify(entryValue), now)
+      );
+
+      await db.batch(statements);
       return { count: entries.length };
     },
   };
@@ -128,11 +185,8 @@ function createKVAdapter(kv) {
 function pickStorage(env) {
   const bindingSource = env ?? globalThis;
 
-  if (bindingSource?.AI_STORAGE && typeof bindingSource.AI_STORAGE.get === 'function') {
-    return createKVAdapter(bindingSource.AI_STORAGE);
-  }
-  if (bindingSource?.KV_BINDING && typeof bindingSource.KV_BINDING.get === 'function') {
-    return createKVAdapter(bindingSource.KV_BINDING);
+  if (bindingSource?.AI_STORAGE_DB && typeof bindingSource.AI_STORAGE_DB.prepare === 'function') {
+    return createD1Adapter(bindingSource.AI_STORAGE_DB);
   }
   return createMemoryAdapter(memoryStore);
 }

@@ -4,11 +4,9 @@ compatibility_date = "2026-03-18"
 account_id = "64ba8506f5d201ceed54c05d58743ce4"
 workers_dev = true
 
-# Required for persistent cross-device storage.
-[[kv_namespaces]]
-binding = "AI_STORAGE"
-id = "b20471c30ce246f59d3d5f17ee62e5e8"
-# preview_id = "<your_kv_preview_namespace_id>"
-
-# Optional preview KV if you create one later.
-# preview_id = "<your_kv_preview_namespace_id>"
+# Required for persistent cross-device storage with Cloudflare D1.
+[[d1_databases]]
+binding = "AI_STORAGE_DB"
+database_name = "travel-planner-ai-storage"
+database_id = "<your_d1_database_id>"
+# preview_database_id = "<your_d1_preview_database_id>"

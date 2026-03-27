@@ -2,7 +2,7 @@ import dns from 'node:dns/promises';
 
 const DEFAULT_ENDPOINT = 'https://travel-planner-ai-storage.simpsonlee71.workers.dev';
 const endpoint = (process.argv[2] || process.env.CLOUDFLARE_WORKER_ENDPOINT || DEFAULT_ENDPOINT).trim();
-const key = `kv-check-${Date.now()}`;
+const key = `d1-check-${Date.now()}`;
 
 function printJson(label, value) {
   console.log(`\n${label}`);
@@ -65,7 +65,7 @@ function printNetworkHelp(error) {
 }
 
 async function main() {
-  console.log(`Verifying Cloudflare Worker KV endpoint: ${endpoint}`);
+  console.log(`Verifying Cloudflare Worker D1 storage endpoint: ${endpoint}`);
   console.log(`Using test key: ${key}`);
 
   const records = await dns.lookup(new URL(endpoint).hostname, { all: true });
@@ -79,10 +79,10 @@ async function main() {
 
   const data = getResult.json?.data;
   if (data?.exists !== true || data?.value?.ok !== true) {
-    throw new Error(`KV verification failed: expected exists=true and value.ok=true, received ${JSON.stringify(data)}`);
+    throw new Error(`Storage verification failed: expected exists=true and value.ok=true, received ${JSON.stringify(data)}`);
   }
 
-  console.log('\nCloudflare Worker KV verification passed.');
+  console.log('\nCloudflare Worker storage verification passed.');
 }
 
 main().catch((error) => {

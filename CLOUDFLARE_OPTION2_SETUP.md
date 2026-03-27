@@ -72,40 +72,42 @@ Then commit and push.
 ## 8) Enable persistent cross-device account data (required)
 Your app now supports shared cloud storage for accounts/trips **only when two things are configured**:
 
-1. Cloudflare Worker has KV binding `AI_STORAGE` in `wrangler.toml` (or `KV_BINDING` for older deployments).
+1. Cloudflare Worker has D1 binding `AI_STORAGE_DB` in `wrangler.toml`.
 2. The deployed app points to the correct Worker URL once at build/deploy time.
 
-### 8.1 Configure KV binding
-1. Cloudflare Dashboard → Storage & Databases → KV → create namespace.
-2. Copy namespace IDs.
+### 8.1 Configure D1 binding
+1. Cloudflare Dashboard → Storage & Databases → D1 → create database.
+2. Copy database IDs.
 3. In `wrangler.toml`, uncomment and fill:
 ```toml
-[[kv_namespaces]]
-binding = "AI_STORAGE"
-id = "<your_kv_namespace_id>"
-preview_id = "<your_kv_preview_namespace_id>"
+[[d1_databases]]
+binding = "AI_STORAGE_DB"
+database_name = "travel-planner-ai-storage"
+database_id = "<your_d1_database_id>"
+preview_database_id = "<your_d1_preview_database_id>"
 ```
 4. Commit and push so GitHub Actions redeploys.
 
-> Important: `AI_STORAGE` is the preferred binding name in this repo. The Worker also accepts `KV_BINDING` for compatibility with older deployments. If neither is bound, the Worker falls back to temporary in-memory storage and cross-device sync will stop working after reloads or across devices.
+> Important: `AI_STORAGE_DB` must be configured in the deployed Worker. If D1 is not bound, storage falls back to temporary in-memory data and cross-device sync will not persist.
 
 
 
-### 8.1.1 KV namespace step-by-step (exact clicks)
+### 8.1.1 D1 setup step-by-step (exact clicks)
 1. Open Cloudflare dashboard and choose your account.
-2. Go to **Storage & Databases** → **KV**.
-3. Click **Create namespace**.
-4. Create one namespace for production (example: `travel-planner-ai-storage-prod`).
-5. (Optional but recommended) Create another for preview/dev (example: `travel-planner-ai-storage-preview`).
-6. Open each namespace and copy the namespace ID.
+2. Go to **Storage & Databases** → **D1**.
+3. Click **Create database**.
+4. Create one database (example: `travel-planner-ai-storage`).
+5. (Optional) create another preview database if needed.
+6. Open the database and copy the Database ID (and preview database id if used).
 
 ### 8.1.2 Update `wrangler.toml`
 Uncomment and fill this block using the IDs:
 ```toml
-[[kv_namespaces]]
-binding = "AI_STORAGE"
-id = "<PROD_NAMESPACE_ID>"
-preview_id = "<PREVIEW_NAMESPACE_ID>"
+[[d1_databases]]
+binding = "AI_STORAGE_DB"
+database_name = "travel-planner-ai-storage"
+database_id = "<YOUR_D1_DATABASE_ID>"
+preview_database_id = "<YOUR_D1_PREVIEW_DATABASE_ID>"
 ```
 
 ### 8.1.3 Commit and deploy
@@ -113,7 +115,7 @@ preview_id = "<PREVIEW_NAMESPACE_ID>"
 2. Push to your deploy branch (`main` in current workflow).
 3. Wait for GitHub Action `Deploy Cloudflare Worker` to pass.
 
-### 8.1.4 Verify KV is actually used
+### 8.1.4 Verify D1 storage is actually used
 Use your Worker URL and run the repo verifier first:
 ```bash
 npm run verify:cloudflare -- 'https://travel-planner-ai-storage.simpsonlee71.workers.dev'
@@ -121,16 +123,16 @@ npm run verify:cloudflare -- 'https://travel-planner-ai-storage.simpsonlee71.wor
 
 If you prefer raw `curl`, use:
 ```bash
-curl -sS -X POST 'https://travel-planner-ai-storage.simpsonlee71.workers.dev'   -H 'content-type: application/json'   --data '{"id":"1","action":"set","key":"kv-check","value":{"ok":true}}'
+curl -sS -X POST 'https://travel-planner-ai-storage.simpsonlee71.workers.dev'   -H 'content-type: application/json'   --data '{"id":"1","action":"set","key":"d1-check","value":{"ok":true}}'
 
-curl -sS -X POST 'https://travel-planner-ai-storage.simpsonlee71.workers.dev'   -H 'content-type: application/json'   --data '{"id":"2","action":"get","key":"kv-check"}'
+curl -sS -X POST 'https://travel-planner-ai-storage.simpsonlee71.workers.dev'   -H 'content-type: application/json'   --data '{"id":"2","action":"get","key":"d1-check"}'
 ```
 You should see `"exists":true` on the second response.
 
 If `curl` fails with a proxy error such as `CONNECT tunnel failed, response 403`, the issue is usually your shell/network proxy rather than the Worker itself. In that case:
 
 ```bash
-NO_PROXY=.workers.dev,workers.dev curl --noproxy '*' -4 -sS -X POST 'https://travel-planner-ai-storage.simpsonlee71.workers.dev' -H 'content-type: application/json' --data '{"id":"1","action":"set","key":"kv-check","value":{"ok":true}}'
+NO_PROXY=.workers.dev,workers.dev curl --noproxy '*' -4 -sS -X POST 'https://travel-planner-ai-storage.simpsonlee71.workers.dev' -H 'content-type: application/json' --data '{"id":"1","action":"set","key":"d1-check","value":{"ok":true}}'
 ```
 
 Or use the browser console:
@@ -139,7 +141,7 @@ Or use the browser console:
 fetch('https://travel-planner-ai-storage.simpsonlee71.workers.dev', {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ id: '1', action: 'set', key: 'kv-check', value: { ok: true } })
+  body: JSON.stringify({ id: '1', action: 'set', key: 'd1-check', value: { ok: true } })
 }).then(r => r.json()).then(console.log);
 ```
 
@@ -149,7 +151,7 @@ fetch('https://travel-planner-ai-storage.simpsonlee71.workers.dev', {
   - `=======`
   - `>>>>>>>`
 - If deploy succeeds but cross-device data still not shared:
-  - Ensure `AI_STORAGE` is bound in deployed Worker.
+  - Ensure `AI_STORAGE_DB` is bound in deployed Worker.
   - Ensure both devices open the same app URL and same Worker endpoint.
   - Ensure browser extensions/privacy mode are not blocking storage/network.
 
@@ -166,6 +168,16 @@ For GitHub Pages, set repository variable `CLOUDFLARE_WORKER_ENDPOINT` to your W
 4. Re-run the **Deploy to GitHub Pages** workflow or push a commit.
 
 After the site redeploys, every device that opens the same app URL will automatically use the new Worker endpoint.
+
+
+### 8.2.2 Cross-device sync checklist (D1)
+To sync app data between different devices, all devices must use the same app deployment and the same Worker endpoint backed by the same D1 database:
+
+1. Deploy Worker with `AI_STORAGE_DB` bound to your production D1 database.
+2. Deploy the web app with `CLOUDFLARE_WORKER_ENDPOINT` set to that Worker URL.
+3. On device A, log in/update trip data and wait up to 15 seconds (auto-sync interval).
+4. On device B, open the same deployed app URL and same account; data should appear automatically after load/focus refresh.
+5. If data does not appear, run `npm run verify:cloudflare -- '<worker-url>'` and confirm `exists: true` for write/read checks.
 
 ### 8.2.1 Optional per-device override
 Only use this for temporary troubleshooting. It is no longer the primary setup path:
