@@ -178,27 +178,109 @@ function usePersist<T>(key:string,init:T){
   return [s,set] as const;
 }
 
-const CLOUD_ENDPOINT_KEY = "tp-cloud-worker-endpoint";
 const CLOUD_DEVICE_ID_KEY = "tp-cloud-device-id";
-const DEPLOYED_CLOUD_WORKER_ENDPOINT = (import.meta.env.VITE_CLOUD_WORKER_ENDPOINT ?? "https://travel-planner-ai-storage.simpsonlee71.workers.dev").trim();
+const CLOUD_CF_ACCOUNT_ID_KEY = "tp-cloudflare-account-id";
+const CLOUD_D1_DATABASE_ID_KEY = "tp-cloudflare-d1-database-id";
+const CLOUD_CF_API_TOKEN_KEY = "tp-cloudflare-api-token";
+const DEPLOYED_CLOUDFLARE_ACCOUNT_ID = (import.meta.env.VITE_CLOUDFLARE_ACCOUNT_ID ?? "").trim();
+const DEPLOYED_CLOUDFLARE_D1_DATABASE_ID = (import.meta.env.VITE_CLOUDFLARE_D1_DATABASE_ID ?? "").trim();
+const DEPLOYED_CLOUDFLARE_API_TOKEN = (import.meta.env.VITE_CLOUDFLARE_API_TOKEN ?? "").trim();
 const CLOUD_SHARED_KEYS = new Set([SK.profiles,SK.trips,SK.adminPw,SK.site]);
 const CLOUD_SYNC_INTERVAL_MS = 15000;
 
-function getCloudWorkerEndpoint(){
+type CloudD1Config = {
+  accountId: string;
+  databaseId: string;
+  apiToken: string;
+};
+
+function getCloudD1Config(): CloudD1Config{
   try{
-    const configured = localStorage.getItem(CLOUD_ENDPOINT_KEY)?.trim();
-    if(configured) return configured;
-    return DEPLOYED_CLOUD_WORKER_ENDPOINT;
+    const accountId = localStorage.getItem(CLOUD_CF_ACCOUNT_ID_KEY)?.trim() || DEPLOYED_CLOUDFLARE_ACCOUNT_ID;
+    const databaseId = localStorage.getItem(CLOUD_D1_DATABASE_ID_KEY)?.trim() || DEPLOYED_CLOUDFLARE_D1_DATABASE_ID;
+    const apiToken = localStorage.getItem(CLOUD_CF_API_TOKEN_KEY)?.trim() || DEPLOYED_CLOUDFLARE_API_TOKEN;
+    return { accountId, databaseId, apiToken };
   }catch{
-    return DEPLOYED_CLOUD_WORKER_ENDPOINT;
+    return {
+      accountId: DEPLOYED_CLOUDFLARE_ACCOUNT_ID,
+      databaseId: DEPLOYED_CLOUDFLARE_D1_DATABASE_ID,
+      apiToken: DEPLOYED_CLOUDFLARE_API_TOKEN,
+    };
   }
 }
 
-async function cloudStorageRequest(endpoint:string,action:string,key:string,value?:unknown){
-  const res = await fetch(endpoint,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:crypto.randomUUID(),action,key,value})});
+async function cloudD1Query(config:CloudD1Config,sql:string,params:unknown[]=[]){
+  if(!config.accountId || !config.databaseId || !config.apiToken){
+    throw new Error("Cloudflare D1 config missing. Set account id, database id, and API token.");
+  }
+
+  const endpoint = `https://api.cloudflare.com/client/v4/accounts/${config.accountId}/d1/database/${config.databaseId}/query`;
+  const res = await fetch(endpoint,{
+    method:"POST",
+    headers:{
+      "content-type":"application/json",
+      "authorization":`Bearer ${config.apiToken}`,
+    },
+    body:JSON.stringify({sql,params}),
+  });
   const data = await res.json();
-  if(!res.ok||!data?.ok) throw new Error(data?.error??`Cloud storage request failed (${res.status})`);
-  return data?.data;
+  if(!res.ok || !data?.success){
+    const err = data?.errors?.[0]?.message ?? data?.messages?.[0] ?? `Cloudflare D1 query failed (${res.status})`;
+    throw new Error(err);
+  }
+
+  const first = Array.isArray(data.result) ? data.result[0] : data.result;
+  if(first?.success === false){
+    const err = first?.error ?? first?.errors?.[0]?.message ?? "Cloudflare D1 statement failed.";
+    throw new Error(err);
+  }
+  return first;
+}
+
+async function ensureCloudD1Schema(config:CloudD1Config){
+  await cloudD1Query(config,`
+    CREATE TABLE IF NOT EXISTS ai_storage (
+      storage_key TEXT PRIMARY KEY,
+      storage_value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+}
+
+async function cloudStorageRequest(action:string,key:string,value?:unknown){
+  const config = getCloudD1Config();
+  await ensureCloudD1Schema(config);
+
+  if(action==="set"){
+    const now = new Date().toISOString();
+    await cloudD1Query(
+      config,
+      `INSERT INTO ai_storage (storage_key, storage_value, updated_at)
+       VALUES (?1, ?2, ?3)
+       ON CONFLICT(storage_key) DO UPDATE SET storage_value=excluded.storage_value, updated_at=excluded.updated_at`,
+      [key, JSON.stringify(value), now]
+    );
+    return { key, value };
+  }
+
+  if(action==="get"){
+    const result = await cloudD1Query(
+      config,
+      "SELECT storage_value FROM ai_storage WHERE storage_key = ?1 LIMIT 1",
+      [key]
+    );
+    const row = result?.results?.[0] as { storage_value?: string } | undefined;
+    if(!row || typeof row.storage_value !== "string"){
+      return { key, value: undefined, exists: false };
+    }
+    try{
+      return { key, value: JSON.parse(row.storage_value), exists: true };
+    }catch{
+      return { key, value: row.storage_value, exists: true };
+    }
+  }
+
+  throw new Error(`Unsupported cloud storage action: ${action}`);
 }
 
 function getCloudDeviceId(){
@@ -234,8 +316,6 @@ function useSharedPersist<T>(key:string,init:T){
 
   const pushRemote = useCallback(async()=>{
     if(!CLOUD_SHARED_KEYS.has(key)) return;
-    const endpoint=getCloudWorkerEndpoint();
-    if(!endpoint) return;
 
     const payload: CloudSyncEnvelope<T> = {
       value: stateRef.current,
@@ -243,17 +323,15 @@ function useSharedPersist<T>(key:string,init:T){
       deviceId: deviceIdRef.current,
     };
 
-    await cloudStorageRequest(endpoint,"set",key,payload);
+    await cloudStorageRequest("set",key,payload);
     latestRemoteAtRef.current = payload.updatedAt;
     setLastError("");
   },[key]);
 
   const pullRemote = useCallback(async()=>{
     if(!CLOUD_SHARED_KEYS.has(key)) return;
-    const endpoint=getCloudWorkerEndpoint();
-    if(!endpoint) return;
 
-    const remote = await cloudStorageRequest(endpoint,"get",key);
+    const remote = await cloudStorageRequest("get",key);
     if(!remote?.exists){
       await pushRemote();
       hydratedRef.current = true;
@@ -326,7 +404,9 @@ function useSharedPersist<T>(key:string,init:T){
           }
         }catch{}
       }
-      if(event.key === CLOUD_ENDPOINT_KEY) syncNow();
+      if(event.key === CLOUD_CF_ACCOUNT_ID_KEY || event.key === CLOUD_D1_DATABASE_ID_KEY || event.key === CLOUD_CF_API_TOKEN_KEY){
+        syncNow();
+      }
     };
 
     const timer = window.setInterval(syncNow,CLOUD_SYNC_INTERVAL_MS);
