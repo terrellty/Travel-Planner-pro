@@ -1137,9 +1137,10 @@ function Landing({siteName,desc,t,onIn,onUp}:{th:ThemeMode;siteName:string;desc:
 /* ═══════════════════════════════════════════════════════════════════════════════
    HEADER
    ═══════════════════════════════════════════════════════════════════════════════ */
-function Header({siteName,th,setTh,lang,setLang,user,view,setView,t,onLogout,onSignIn}:{
+function Header({siteName,th,setTh,lang,setLang,user,view,setView,t,onLogout,onSignIn,onSync,isSyncing}:{
   siteName:string;th:ThemeMode;setTh:(v:ThemeMode)=>void;lang:Language;setLang:(v:Language)=>void;
   user?:Profile;view:ViewMode;setView:(v:ViewMode)=>void;t:(k:TKey)=>string;onLogout:()=>void;onSignIn:()=>void;
+  onSync:()=>void;isSyncing:boolean;
 }){
   return <header className={cx("sticky top-0 z-40 border-b backdrop-blur-lg transition-colors",
     th==="dark"?"border-white/10 bg-slate-950/80":"border-slate-200 bg-white/80")}>
@@ -1156,6 +1157,9 @@ function Header({siteName,th,setTh,lang,setLang,user,view,setView,t,onLogout,onS
             th==="dark"?"bg-white/5 hover:bg-white/10":"bg-slate-100 hover:bg-slate-200")}>
           {th==="dark"?"☀️":"🌙"}
         </button>
+        <Btn th={th} v="ghost" sz="sm" onClick={onSync} disabled={isSyncing}>
+          {isSyncing ? "Syncing…" : "Sync now"}
+        </Btn>
         {view==="user"&&<Btn th={th} v="ghost" sz="sm" onClick={()=>setView("admin")}>{t("admin")}</Btn>}
         {view==="admin"&&user&&<Btn th={th} v="ghost" sz="sm" onClick={()=>setView("user")}>{t("myTrips")}</Btn>}
         {user?<>
@@ -2924,6 +2928,7 @@ export function App(){
   const [view,setView]=useState<ViewMode>("user");
   const [authMode,setAuthMode]=useState<"signin"|"signup">("signin");
   const [showAuth,setShowAuth]=useState(false);
+  const [manualSyncing,setManualSyncing]=useState(false);
 
   const t=useT(lang);
 
@@ -2933,9 +2938,14 @@ export function App(){
   const sharedSyncReady = profilesMeta.hydrated && tripsMeta.hydrated && adminPwMeta.hydrated && siteCfgMeta.hydrated;
   const sharedSyncErrors = [profilesMeta.lastError,tripsMeta.lastError,adminPwMeta.lastError,siteCfgMeta.lastError].filter(Boolean);
   const syncStatusMessage = sharedSyncErrors[0] ?? "";
-  const refreshSharedSync = async()=>{
-    await Promise.allSettled([profilesMeta.syncNow(),tripsMeta.syncNow(),adminPwMeta.syncNow(),siteCfgMeta.syncNow()]);
-  };
+  const refreshSharedSync = useCallback(async()=>{
+    setManualSyncing(true);
+    try{
+      await Promise.allSettled([profilesMeta.syncNow(),tripsMeta.syncNow(),adminPwMeta.syncNow(),siteCfgMeta.syncNow()]);
+    }finally{
+      setManualSyncing(false);
+    }
+  },[adminPwMeta,profilesMeta,siteCfgMeta,tripsMeta]);
 
   const user=useMemo(()=>profiles.find(p=>p.id===userId),[userId,profiles]);
 
@@ -3025,7 +3035,8 @@ export function App(){
 
     {!showLanding&&<Header siteName={siteCfg.siteName} th={theme} setTh={setTheme} lang={lang} setLang={setLang}
       user={user} view={view} setView={setView} t={t}
-      onLogout={()=>setUserId("")} onSignIn={()=>{setAuthMode("signin");setShowAuth(true);}}/>}
+      onLogout={()=>setUserId("")} onSignIn={()=>{setAuthMode("signin");setShowAuth(true);}}
+      onSync={()=>{refreshSharedSync().catch(()=>{});}} isSyncing={manualSyncing}/>}
 
     {view==="admin"&&!showLanding&&(
       !sharedSyncReady
@@ -3039,10 +3050,12 @@ export function App(){
                 theme==="dark"?"border-amber-400/30 bg-amber-400/10 text-amber-200":"border-amber-200 bg-amber-50 text-amber-800")}>
                 <p className="font-semibold">Sync error</p>
                 <p className="mt-1 break-words">{syncStatusMessage}</p>
-                <p className="mt-2">Possible fixes: confirm both devices use the same app URL, clear any stale cloud endpoint override in local storage, and verify the Cloudflare worker KV binding is deployed.</p>
+                <p className="mt-2">Possible fixes: confirm both devices use the same app URL, clear any stale cloud endpoint override in local storage, and verify the Cloudflare D1 database credentials are valid.</p>
               </div>}
               <div className="flex gap-2">
-                <Btn th={theme} onClick={()=>{refreshSharedSync().catch(()=>{});}}>Retry Sync</Btn>
+                <Btn th={theme} onClick={()=>{refreshSharedSync().catch(()=>{});}} disabled={manualSyncing}>
+                  {manualSyncing ? "Syncing…" : "Retry Sync"}
+                </Btn>
               </div>
             </Card>
           </div>
