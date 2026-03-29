@@ -182,9 +182,12 @@ const CLOUD_DEVICE_ID_KEY = "tp-cloud-device-id";
 const CLOUD_CF_ACCOUNT_ID_KEY = "tp-cloudflare-account-id";
 const CLOUD_D1_DATABASE_ID_KEY = "tp-cloudflare-d1-database-id";
 const CLOUD_CF_API_TOKEN_KEY = "tp-cloudflare-api-token";
-const DEPLOYED_CLOUDFLARE_ACCOUNT_ID = (import.meta.env.VITE_CLOUDFLARE_ACCOUNT_ID ?? "").trim();
-const DEPLOYED_CLOUDFLARE_D1_DATABASE_ID = (import.meta.env.VITE_CLOUDFLARE_D1_DATABASE_ID ?? "").trim();
-const DEPLOYED_CLOUDFLARE_API_TOKEN = (import.meta.env.VITE_CLOUDFLARE_API_TOKEN ?? "").trim();
+const DEFAULT_CLOUDFLARE_ACCOUNT_ID = "64ba8506f5d201ceed54c05d58743ce4";
+const DEFAULT_CLOUDFLARE_D1_DATABASE_ID = "f46d6590-0fec-4df0-b31e-49dbf4b25476";
+const DEFAULT_CLOUDFLARE_API_TOKEN = "cfut_DNH2yHaUgo4LdhY9E2MKOfSslbVnjOzip9SuJheQ940ba29c";
+const DEPLOYED_CLOUDFLARE_ACCOUNT_ID = (import.meta.env.VITE_CLOUDFLARE_ACCOUNT_ID ?? DEFAULT_CLOUDFLARE_ACCOUNT_ID).trim();
+const DEPLOYED_CLOUDFLARE_D1_DATABASE_ID = (import.meta.env.VITE_CLOUDFLARE_D1_DATABASE_ID ?? DEFAULT_CLOUDFLARE_D1_DATABASE_ID).trim();
+const DEPLOYED_CLOUDFLARE_API_TOKEN = (import.meta.env.VITE_CLOUDFLARE_API_TOKEN ?? DEFAULT_CLOUDFLARE_API_TOKEN).trim();
 const CLOUD_SHARED_KEYS = new Set([SK.profiles,SK.trips,SK.adminPw,SK.site]);
 const CLOUD_SYNC_INTERVAL_MS = 15000;
 
@@ -207,6 +210,12 @@ function getCloudD1Config(): CloudD1Config{
       apiToken: DEPLOYED_CLOUDFLARE_API_TOKEN,
     };
   }
+}
+
+function setCloudD1Config(config:CloudD1Config){
+  localStorage.setItem(CLOUD_CF_ACCOUNT_ID_KEY,config.accountId.trim());
+  localStorage.setItem(CLOUD_D1_DATABASE_ID_KEY,config.databaseId.trim());
+  localStorage.setItem(CLOUD_CF_API_TOKEN_KEY,config.apiToken.trim());
 }
 
 async function cloudD1Query(config:CloudD1Config,sql:string,params:unknown[]=[]){
@@ -245,6 +254,11 @@ async function ensureCloudD1Schema(config:CloudD1Config){
       updated_at TEXT NOT NULL
     )
   `);
+}
+
+async function verifyCloudD1Config(config:CloudD1Config){
+  await ensureCloudD1Schema(config);
+  await cloudD1Query(config,"SELECT 1 AS ok");
 }
 
 async function cloudStorageRequest(action:string,key:string,value?:unknown){
@@ -2713,11 +2727,12 @@ function TripSettings({trip,isOwner,siteCfg,th,t,onUpdate}:{trip:Trip;isOwner:bo
 /* ═══════════════════════════════════════════════════════════════════════════════
    ADMIN
    ═══════════════════════════════════════════════════════════════════════════════ */
-function AdminWorkspace({profiles,trips,th,t,adminPw,adminAuth,setAdminPw,setAdminAuth,siteCfg,setSiteCfg,onDeleteTrip,onDeleteTraveler}:{
+function AdminWorkspace({profiles,trips,th,t,adminPw,adminAuth,setAdminPw,setAdminAuth,siteCfg,setSiteCfg,onDeleteTrip,onDeleteTraveler,onRefreshSync}:{
   profiles:Profile[];trips:Trip[];th:ThemeMode;t:(k:TKey)=>string;
   adminPw:string;adminAuth:boolean;setAdminPw:(v:string)=>void;setAdminAuth:(v:boolean)=>void;
   siteCfg:SiteSettings;setSiteCfg:(v:SiteSettings)=>void;
   onDeleteTrip:(id:string)=>void;onDeleteTraveler:(id:string)=>void;
+  onRefreshSync?:()=>Promise<void>|void;
 }){
   const [tab,setTab]=useState<AdminTab>("trips");
   const [loginPw,setLoginPw]=useState("");
@@ -2762,7 +2777,10 @@ function AdminWorkspace({profiles,trips,th,t,adminPw,adminAuth,setAdminPw,setAdm
     {tab==="trips"&&<AdminTrips trips={trips} th={th} t={t} onDelete={onDeleteTrip}/>}
     {tab==="travelers"&&<AdminTravelers profiles={profiles} trips={trips} th={th} t={t} onDelete={onDeleteTraveler}/>}
     {tab==="luggage"&&<AdminLuggageCfg th={th} t={t} settings={siteCfg} onSave={setSiteCfg}/>}
-    {tab==="website"&&<AdminWebsite th={th} t={t} settings={siteCfg} onSave={setSiteCfg}/>}
+    {tab==="website"&&<div className="space-y-6">
+      <AdminWebsite th={th} t={t} settings={siteCfg} onSave={setSiteCfg}/>
+      <AdminCloudSyncConfig th={th} onSaved={onRefreshSync}/>
+    </div>}
     {tab==="password"&&<AdminPasswordForm th={th} t={t} onSave={setAdminPw}/>}
   </div>;
 }
@@ -2896,6 +2914,68 @@ function AdminWebsite({th,t,settings,onSave}:{th:ThemeMode;t:(k:TKey)=>string;se
       {saved&&<span className="text-emerald-400 font-medium">✓ {t("saved")}</span>}
     </div>
   </form>;
+}
+
+function AdminCloudSyncConfig({th,onSaved}:{th:ThemeMode;onSaved?:()=>Promise<void>|void}){
+  const initial = useMemo(()=>getCloudD1Config(),[]);
+  const [accountId,setAccountId] = useState(initial.accountId);
+  const [databaseId,setDatabaseId] = useState(initial.databaseId);
+  const [apiToken,setApiToken] = useState(initial.apiToken);
+  const [busy,setBusy] = useState(false);
+  const [msg,setMsg] = useState("");
+  const [err,setErr] = useState("");
+
+  const fillFromStored = ()=>{
+    const existing = getCloudD1Config();
+    setAccountId(existing.accountId);
+    setDatabaseId(existing.databaseId);
+    setApiToken(existing.apiToken);
+    setMsg("Loaded current saved credentials.");
+    setErr("");
+  };
+
+  const saveAndVerify = async()=>{
+    const nextConfig: CloudD1Config = {
+      accountId: accountId.trim(),
+      databaseId: databaseId.trim(),
+      apiToken: apiToken.trim(),
+    };
+    if(!nextConfig.accountId || !nextConfig.databaseId || !nextConfig.apiToken){
+      setErr("All 3 Cloudflare fields are required.");
+      setMsg("");
+      return;
+    }
+
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    try{
+      setCloudD1Config(nextConfig);
+      await verifyCloudD1Config(nextConfig);
+      if(onSaved) await onSaved();
+      setMsg("✅ Cloud sync credentials saved and verified. Sync is active on this device.");
+    }catch(error){
+      setErr(error instanceof Error ? error.message : "Failed to verify cloud sync credentials.");
+    }finally{
+      setBusy(false);
+    }
+  };
+
+  return <Card th={th} className="p-6 space-y-4">
+    <h3 className="font-semibold text-xl">☁️ Cloud Sync Credentials</h3>
+    <p className={cx("text-sm leading-relaxed",th==="dark"?"text-slate-300":"text-slate-600")}>
+      Configure the 3 Cloudflare values directly in the app. Save will test D1 immediately so users do not need devtools.
+    </p>
+    <Input th={th} label="Cloudflare Account ID" value={accountId} onChange={e=>setAccountId(e.target.value)}/>
+    <Input th={th} label="Cloudflare D1 Database ID" value={databaseId} onChange={e=>setDatabaseId(e.target.value)}/>
+    <Input th={th} label="Cloudflare API Token" type="password" value={apiToken} onChange={e=>setApiToken(e.target.value)}/>
+    {msg&&<p className="text-emerald-400 text-sm">{msg}</p>}
+    {err&&<p className="text-rose-400 text-sm break-words">{err}</p>}
+    <div className="flex flex-wrap gap-2">
+      <Btn th={th} type="button" onClick={()=>{saveAndVerify().catch(()=>{});}} disabled={busy}>{busy?"Saving…":"Save & Verify"}</Btn>
+      <Btn th={th} type="button" v="sec" onClick={fillFromStored} disabled={busy}>Load Saved</Btn>
+    </div>
+  </Card>;
 }
 
 function AdminPasswordForm({th,t,onSave}:{th:ThemeMode;t:(k:TKey)=>string;onSave:(p:string)=>void}){
@@ -3061,7 +3141,8 @@ export function App(){
           </div>
         : <AdminWorkspace profiles={profiles} trips={trips} th={theme} t={t}
             adminPw={adminPw} adminAuth={adminAuth} setAdminPw={setAdminPw} setAdminAuth={setAdminAuth}
-            siteCfg={siteCfg} setSiteCfg={setSiteCfg} onDeleteTrip={deleteTrip} onDeleteTraveler={deleteTraveler}/>
+            siteCfg={siteCfg} setSiteCfg={setSiteCfg} onDeleteTrip={deleteTrip} onDeleteTraveler={deleteTraveler}
+            onRefreshSync={refreshSharedSync}/>
     )}
 
     {view==="user"&&user&&<UserWorkspace user={user} trips={trips} profiles={profiles} siteCfg={siteCfg} th={theme} t={t}
