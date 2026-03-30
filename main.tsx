@@ -1151,14 +1151,14 @@ function Landing({siteName,desc,t,onIn,onUp}:{th:ThemeMode;siteName:string;desc:
 /* ═══════════════════════════════════════════════════════════════════════════════
    HEADER
    ═══════════════════════════════════════════════════════════════════════════════ */
-function Header({siteName,th,setTh,lang,setLang,user,view,setView,t,onLogout,onSignIn,onSync,isSyncing}:{
+function Header({siteName,th,setTh,lang,setLang,user,view,setView,t,onLogout,onSignIn,onSync,isSyncing,syncFeedback,isSyncError}:{
   siteName:string;th:ThemeMode;setTh:(v:ThemeMode)=>void;lang:Language;setLang:(v:Language)=>void;
   user?:Profile;view:ViewMode;setView:(v:ViewMode)=>void;t:(k:TKey)=>string;onLogout:()=>void;onSignIn:()=>void;
-  onSync:()=>void;isSyncing:boolean;
+  onSync:()=>void;isSyncing:boolean;syncFeedback:string;isSyncError:boolean;
 }){
   return <header className={cx("sticky top-0 z-40 border-b backdrop-blur-lg transition-colors",
     th==="dark"?"border-white/10 bg-slate-950/80":"border-slate-200 bg-white/80")}>
-    <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+    <div className="max-w-7xl mx-auto px-6 py-4 flex flex-wrap items-center justify-between gap-3">
       <h1 className="text-2xl font-bold cursor-pointer" onClick={()=>setView("user")}>✈ {siteName}</h1>
       <div className="flex items-center gap-3">
         <select value={lang} onChange={e=>setLang(e.target.value as Language)}
@@ -1185,6 +1185,12 @@ function Header({siteName,th,setTh,lang,setLang,user,view,setView,t,onLogout,onS
           <Btn th={th} v="sec" sz="sm" onClick={onLogout}>{t("signOut")}</Btn>
         </>:<Btn th={th} sz="sm" onClick={onSignIn}>{t("signIn")}</Btn>}
       </div>
+      <p className={cx("text-xs w-full",
+        isSyncError
+          ? (th==="dark"?"text-rose-300":"text-rose-700")
+          : (th==="dark"?"text-emerald-300":"text-emerald-700"))}>
+        {syncFeedback}
+      </p>
     </div>
   </header>;
 }
@@ -3009,6 +3015,8 @@ export function App(){
   const [authMode,setAuthMode]=useState<"signin"|"signup">("signin");
   const [showAuth,setShowAuth]=useState(false);
   const [manualSyncing,setManualSyncing]=useState(false);
+  const [syncFeedback,setSyncFeedback]=useState("Ready to sync.");
+  const [syncFeedbackError,setSyncFeedbackError]=useState(false);
 
   const t=useT(lang);
 
@@ -3020,8 +3028,24 @@ export function App(){
   const syncStatusMessage = sharedSyncErrors[0] ?? "";
   const refreshSharedSync = useCallback(async()=>{
     setManualSyncing(true);
+    setSyncFeedback("Syncing with cloud…");
+    setSyncFeedbackError(false);
     try{
-      await Promise.allSettled([profilesMeta.syncNow(),tripsMeta.syncNow(),adminPwMeta.syncNow(),siteCfgMeta.syncNow()]);
+      const results = await Promise.allSettled([profilesMeta.syncNow(),tripsMeta.syncNow(),adminPwMeta.syncNow(),siteCfgMeta.syncNow()]);
+      const rejected = results.filter((result): result is PromiseRejectedResult => result.status==="rejected");
+      const latestErrors = [profilesMeta.lastError,tripsMeta.lastError,adminPwMeta.lastError,siteCfgMeta.lastError].filter(Boolean);
+      if(rejected.length>0 || latestErrors.length>0){
+        const rejectedMessage = rejected[0]?.reason instanceof Error
+          ? rejected[0].reason.message
+          : typeof rejected[0]?.reason === "string"
+            ? rejected[0].reason
+            : "";
+        setSyncFeedback(`Sync failed: ${(latestErrors[0] ?? rejectedMessage) || "Unknown cloud sync error."}`);
+        setSyncFeedbackError(true);
+      }else{
+        setSyncFeedback(`Sync completed at ${new Date().toLocaleTimeString()}.`);
+        setSyncFeedbackError(false);
+      }
     }finally{
       setManualSyncing(false);
     }
@@ -3116,7 +3140,8 @@ export function App(){
     {!showLanding&&<Header siteName={siteCfg.siteName} th={theme} setTh={setTheme} lang={lang} setLang={setLang}
       user={user} view={view} setView={setView} t={t}
       onLogout={()=>setUserId("")} onSignIn={()=>{setAuthMode("signin");setShowAuth(true);}}
-      onSync={()=>{refreshSharedSync().catch(()=>{});}} isSyncing={manualSyncing}/>}
+      onSync={()=>{refreshSharedSync().catch(()=>{});}} isSyncing={manualSyncing}
+      syncFeedback={syncFeedback} isSyncError={syncFeedbackError}/>}
 
     {view==="admin"&&!showLanding&&(
       !sharedSyncReady
