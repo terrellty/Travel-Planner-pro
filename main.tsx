@@ -224,14 +224,23 @@ async function cloudD1Query(config:CloudD1Config,sql:string,params:unknown[]=[])
   }
 
   const endpoint = `https://api.cloudflare.com/client/v4/accounts/${config.accountId}/d1/database/${config.databaseId}/query`;
-  const res = await fetch(endpoint,{
-    method:"POST",
-    headers:{
-      "content-type":"application/json",
-      "authorization":`Bearer ${config.apiToken}`,
-    },
-    body:JSON.stringify({sql,params}),
-  });
+  let res: Response;
+  try{
+    res = await fetch(endpoint,{
+      method:"POST",
+      headers:{
+        "content-type":"application/json",
+        "authorization":`Bearer ${config.apiToken}`,
+      },
+      body:JSON.stringify({sql,params}),
+    });
+  }catch(error){
+    const raw = error instanceof Error ? error.message : String(error ?? "");
+    const hint = /load failed|failed to fetch|networkerror|network request failed/i.test(raw)
+      ? "Network request to Cloudflare failed. Check internet, browser extensions/ad-blockers, and CORS/firewall settings."
+      : "Unable to reach Cloudflare D1 endpoint.";
+    throw new Error(`${hint} (${raw || "unknown fetch error"})`);
+  }
   const data = await res.json();
   if(!res.ok || !data?.success){
     const err = data?.errors?.[0]?.message ?? data?.messages?.[0] ?? `Cloudflare D1 query failed (${res.status})`;
@@ -244,6 +253,15 @@ async function cloudD1Query(config:CloudD1Config,sql:string,params:unknown[]=[])
     throw new Error(err);
   }
   return first;
+}
+
+function formatSyncErrorMessage(message:string){
+  const trimmed = message.trim();
+  if(!trimmed) return "Unknown cloud sync error.";
+  if(/^load failed$/i.test(trimmed)){
+    return "Network request failed before reaching Cloudflare. Check internet, VPN/firewall, ad-blockers, and token permissions.";
+  }
+  return trimmed;
 }
 
 async function ensureCloudD1Schema(config:CloudD1Config){
@@ -3040,7 +3058,8 @@ export function App(){
           : typeof rejected[0]?.reason === "string"
             ? rejected[0].reason
             : "";
-        setSyncFeedback(`Sync failed: ${(latestErrors[0] ?? rejectedMessage) || "Unknown cloud sync error."}`);
+        const nextError = formatSyncErrorMessage((latestErrors[0] ?? rejectedMessage) || "");
+        setSyncFeedback(`Sync failed: ${nextError}`);
         setSyncFeedbackError(true);
       }else{
         setSyncFeedback(`Sync completed at ${new Date().toLocaleTimeString()}.`);
