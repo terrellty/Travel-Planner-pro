@@ -235,6 +235,7 @@ async function cloudD1Query(config:CloudD1Config,sql:string,params:unknown[]=[])
   }
 
   const endpoint = `https://api.cloudflare.com/client/v4/accounts/${config.accountId}/d1/database/${config.databaseId}/query`;
+  const endpointHint = `Endpoint: ${endpoint}`;
   let res: Response;
   const normalizedSql = sql.trim();
   try{
@@ -248,21 +249,22 @@ async function cloudD1Query(config:CloudD1Config,sql:string,params:unknown[]=[])
     });
   }catch(error){
     const raw = error instanceof Error ? error.message : String(error ?? "");
-    const hint = /load failed|failed to fetch|networkerror|network request failed/i.test(raw)
-      ? "Network request to Cloudflare failed. Check internet, browser extensions/ad-blockers, and CORS/firewall settings."
-      : "Unable to reach Cloudflare D1 endpoint.";
-    throw new Error(`${hint} (${raw || "unknown fetch error"})`);
+    const isBlockedNetwork = /load failed|failed to fetch|networkerror|network request failed/i.test(raw);
+    if(isBlockedNetwork){
+      throw new Error(`Browser blocked the Cloudflare D1 API request before it reached Cloudflare (commonly CORS/policy/firewall). This can happen even if opening the API URL works in a tab. ${endpointHint}`);
+    }
+    throw new Error(`Unable to reach Cloudflare D1 endpoint. ${raw || "Unknown fetch error."} ${endpointHint}`);
   }
   const data = await res.json();
   if(!res.ok || !data?.success){
     const err = data?.errors?.[0]?.message ?? data?.messages?.[0] ?? `Cloudflare D1 query failed (${res.status})`;
-    throw new Error(err);
+    throw new Error(`${err} ${endpointHint}`);
   }
 
   const first = Array.isArray(data.result) ? data.result[0] : data.result;
   if(first?.success === false){
     const err = first?.error ?? first?.errors?.[0]?.message ?? "Cloudflare D1 statement failed.";
-    throw new Error(err);
+    throw new Error(`${err} ${endpointHint}`);
   }
   return first;
 }
