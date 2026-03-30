@@ -279,10 +279,28 @@ function formatSyncErrorMessage(message:string){
 }
 
 async function ensureCloudD1Schema(config:CloudD1Config){
-  await cloudD1Query(
-    config,
-    "CREATE TABLE IF NOT EXISTS ai_storage (storage_key TEXT PRIMARY KEY, storage_value TEXT NOT NULL, updated_at TEXT NOT NULL)"
-  );
+  const createTableSql = "CREATE TABLE IF NOT EXISTS ai_storage (storage_key TEXT PRIMARY KEY, storage_value TEXT NOT NULL, updated_at TEXT NOT NULL)";
+  try{
+    await cloudD1Query(config,createTableSql);
+  }catch(error){
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    const isIncompleteInput = /incomplete input/i.test(message);
+    if(!isIncompleteInput) throw error;
+
+    // Some D1 API paths can intermittently reject the IF NOT EXISTS variant with a parser error.
+    // Retry with a plain CREATE TABLE statement, and tolerate "already exists" responses.
+    try{
+      await cloudD1Query(
+        config,
+        "CREATE TABLE ai_storage (storage_key TEXT PRIMARY KEY, storage_value TEXT NOT NULL, updated_at TEXT NOT NULL)"
+      );
+    }catch(retryError){
+      const retryMessage = retryError instanceof Error ? retryError.message : String(retryError ?? "");
+      if(!/already exists/i.test(retryMessage)){
+        throw retryError;
+      }
+    }
+  }
   await cloudD1Query(
     config,
     "CREATE INDEX IF NOT EXISTS idx_ai_storage_updated_at ON ai_storage(updated_at)"
