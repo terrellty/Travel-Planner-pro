@@ -182,12 +182,15 @@ const CLOUD_DEVICE_ID_KEY = "tp-cloud-device-id";
 const CLOUD_CF_ACCOUNT_ID_KEY = "tp-cloudflare-account-id";
 const CLOUD_D1_DATABASE_ID_KEY = "tp-cloudflare-d1-database-id";
 const CLOUD_CF_API_TOKEN_KEY = "tp-cloudflare-api-token";
+const CLOUD_WORKER_ENDPOINT_KEY = "tp-cloud-worker-endpoint";
 const DEFAULT_CLOUDFLARE_ACCOUNT_ID = "64ba8506f5d201ceed54c05d58743ce4";
 const DEFAULT_CLOUDFLARE_D1_DATABASE_ID = "f46d6590-0fec-4df0-b31e-49dbf4b25476";
 const DEFAULT_CLOUDFLARE_API_TOKEN = "cfut_DNH2yHaUgo4LdhY9E2MKOfSslbVnjOzip9SuJheQ940ba29c";
+const DEFAULT_CLOUDFLARE_WORKER_ENDPOINT = "https://travel-planner-ai-storage.simpsonlee71.workers.dev";
 const DEPLOYED_CLOUDFLARE_ACCOUNT_ID = (import.meta.env.VITE_CLOUDFLARE_ACCOUNT_ID ?? DEFAULT_CLOUDFLARE_ACCOUNT_ID).trim();
 const DEPLOYED_CLOUDFLARE_D1_DATABASE_ID = (import.meta.env.VITE_CLOUDFLARE_D1_DATABASE_ID ?? DEFAULT_CLOUDFLARE_D1_DATABASE_ID).trim();
 const DEPLOYED_CLOUDFLARE_API_TOKEN = (import.meta.env.VITE_CLOUDFLARE_API_TOKEN ?? DEFAULT_CLOUDFLARE_API_TOKEN).trim();
+const DEPLOYED_CLOUDFLARE_WORKER_ENDPOINT = (import.meta.env.VITE_CLOUDFLARE_WORKER_ENDPOINT ?? DEFAULT_CLOUDFLARE_WORKER_ENDPOINT).trim();
 const CLOUD_SHARED_KEYS = new Set([SK.profiles,SK.trips,SK.adminPw,SK.site]);
 const CLOUD_SYNC_INTERVAL_MS = 15000;
 
@@ -216,6 +219,14 @@ function setCloudD1Config(config:CloudD1Config){
   localStorage.setItem(CLOUD_CF_ACCOUNT_ID_KEY,config.accountId.trim());
   localStorage.setItem(CLOUD_D1_DATABASE_ID_KEY,config.databaseId.trim());
   localStorage.setItem(CLOUD_CF_API_TOKEN_KEY,config.apiToken.trim());
+}
+
+function getCloudWorkerEndpoint(){
+  try{
+    return (localStorage.getItem(CLOUD_WORKER_ENDPOINT_KEY)?.trim() || DEPLOYED_CLOUDFLARE_WORKER_ENDPOINT).trim();
+  }catch{
+    return DEPLOYED_CLOUDFLARE_WORKER_ENDPOINT;
+  }
 }
 
 async function cloudD1Query(config:CloudD1Config,sql:string,params:unknown[]=[]){
@@ -284,6 +295,29 @@ async function verifyCloudD1Config(config:CloudD1Config){
 }
 
 async function cloudStorageRequest(action:string,key:string,value?:unknown){
+  const workerEndpoint = getCloudWorkerEndpoint();
+  if(workerEndpoint){
+    let response: Response;
+    try{
+      response = await fetch(workerEndpoint,{
+        method:"POST",
+        headers:{ "content-type":"application/json" },
+        body:JSON.stringify({ id: crypto.randomUUID(), action, key, value }),
+      });
+    }catch(error){
+      const raw = error instanceof Error ? error.message : String(error ?? "");
+      throw new Error(`Cannot reach cloud worker endpoint. ${formatSyncErrorMessage(raw)}`);
+    }
+    const result = await response.json();
+    if(!response.ok){
+      throw new Error(result?.error || `Cloud worker request failed (${response.status}).`);
+    }
+    if(result?.ok === false){
+      throw new Error(result?.error || "Cloud worker rejected the request.");
+    }
+    return result?.data;
+  }
+
   const config = getCloudD1Config();
   await ensureCloudD1Schema(config);
 
