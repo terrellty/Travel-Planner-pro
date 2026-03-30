@@ -273,9 +273,6 @@ function formatSyncErrorMessage(message:string){
   if(/^load failed$/i.test(trimmed) || /failed to fetch/i.test(trimmed)){
     return "Network request was blocked before reaching cloud sync service. Check internet, VPN/firewall, and browser extensions.";
   }
-  if(/api\.cloudflare\.com/i.test(trimmed) && /Network request/i.test(trimmed)){
-    return "Direct browser access to Cloudflare D1 was blocked. Configure a Cloud Worker endpoint (tp-cloud-worker-endpoint / VITE_CLOUDFLARE_WORKER_ENDPOINT).";
-  }
   return trimmed;
 }
 
