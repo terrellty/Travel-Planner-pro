@@ -224,36 +224,58 @@ async function cloudD1Query(config:CloudD1Config,sql:string,params:unknown[]=[])
   }
 
   const endpoint = `https://api.cloudflare.com/client/v4/accounts/${config.accountId}/d1/database/${config.databaseId}/query`;
-  const res = await fetch(endpoint,{
-    method:"POST",
-    headers:{
-      "content-type":"application/json",
-      "authorization":`Bearer ${config.apiToken}`,
-    },
-    body:JSON.stringify({sql,params}),
-  });
+  const endpointHint = `Endpoint: ${endpoint}`;
+  let res: Response;
+  const normalizedSql = sql.trim();
+  try{
+    res = await fetch(endpoint,{
+      method:"POST",
+      headers:{
+        "content-type":"application/json",
+        "authorization":`Bearer ${config.apiToken}`,
+      },
+      body:JSON.stringify({sql:normalizedSql,params}),
+    });
+  }catch(error){
+    const raw = error instanceof Error ? error.message : String(error ?? "");
+    const isBlockedNetwork = /load failed|failed to fetch|networkerror|network request failed/i.test(raw);
+    if(isBlockedNetwork){
+      throw new Error(`Browser blocked the Cloudflare D1 API request before it reached Cloudflare (commonly CORS/policy/firewall). This can happen even if opening the API URL works in a tab. ${endpointHint}`);
+    }
+    throw new Error(`Unable to reach Cloudflare D1 endpoint. ${raw || "Unknown fetch error."} ${endpointHint}`);
+  }
   const data = await res.json();
   if(!res.ok || !data?.success){
     const err = data?.errors?.[0]?.message ?? data?.messages?.[0] ?? `Cloudflare D1 query failed (${res.status})`;
-    throw new Error(err);
+    throw new Error(`${err} ${endpointHint}`);
   }
 
   const first = Array.isArray(data.result) ? data.result[0] : data.result;
   if(first?.success === false){
     const err = first?.error ?? first?.errors?.[0]?.message ?? "Cloudflare D1 statement failed.";
-    throw new Error(err);
+    throw new Error(`${err} ${endpointHint}`);
   }
   return first;
 }
 
+function formatSyncErrorMessage(message:string){
+  const trimmed = message.trim();
+  if(!trimmed) return "Unknown cloud sync error.";
+  if(/^load failed$/i.test(trimmed) || /failed to fetch/i.test(trimmed)){
+    return "Network request was blocked before reaching cloud sync service. Check internet, VPN/firewall, and browser extensions.";
+  }
+  return trimmed;
+}
+
 async function ensureCloudD1Schema(config:CloudD1Config){
-  await cloudD1Query(config,`
-    CREATE TABLE IF NOT EXISTS ai_storage (
-      storage_key TEXT PRIMARY KEY,
-      storage_value TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-  `);
+  await cloudD1Query(
+    config,
+    "CREATE TABLE IF NOT EXISTS ai_storage (storage_key TEXT PRIMARY KEY, storage_value TEXT NOT NULL, updated_at TEXT NOT NULL)"
+  );
+  await cloudD1Query(
+    config,
+    "CREATE INDEX IF NOT EXISTS idx_ai_storage_updated_at ON ai_storage(updated_at)"
+  );
 }
 
 async function verifyCloudD1Config(config:CloudD1Config){
@@ -1151,14 +1173,14 @@ function Landing({siteName,desc,t,onIn,onUp}:{th:ThemeMode;siteName:string;desc:
 /* ═══════════════════════════════════════════════════════════════════════════════
    HEADER
    ═══════════════════════════════════════════════════════════════════════════════ */
-function Header({siteName,th,setTh,lang,setLang,user,view,setView,t,onLogout,onSignIn,onSync,isSyncing}:{
+function Header({siteName,th,setTh,lang,setLang,user,view,setView,t,onLogout,onSignIn,onSync,isSyncing,syncFeedback,isSyncError}:{
   siteName:string;th:ThemeMode;setTh:(v:ThemeMode)=>void;lang:Language;setLang:(v:Language)=>void;
   user?:Profile;view:ViewMode;setView:(v:ViewMode)=>void;t:(k:TKey)=>string;onLogout:()=>void;onSignIn:()=>void;
-  onSync:()=>void;isSyncing:boolean;
+  onSync:()=>void;isSyncing:boolean;syncFeedback:string;isSyncError:boolean;
 }){
   return <header className={cx("sticky top-0 z-40 border-b backdrop-blur-lg transition-colors",
     th==="dark"?"border-white/10 bg-slate-950/80":"border-slate-200 bg-white/80")}>
-    <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+    <div className="max-w-7xl mx-auto px-6 py-4 flex flex-wrap items-center justify-between gap-3">
       <h1 className="text-2xl font-bold cursor-pointer" onClick={()=>setView("user")}>✈ {siteName}</h1>
       <div className="flex items-center gap-3">
         <select value={lang} onChange={e=>setLang(e.target.value as Language)}
@@ -1185,6 +1207,12 @@ function Header({siteName,th,setTh,lang,setLang,user,view,setView,t,onLogout,onS
           <Btn th={th} v="sec" sz="sm" onClick={onLogout}>{t("signOut")}</Btn>
         </>:<Btn th={th} sz="sm" onClick={onSignIn}>{t("signIn")}</Btn>}
       </div>
+      <p className={cx("text-xs w-full",
+        isSyncError
+          ? (th==="dark"?"text-rose-300":"text-rose-700")
+          : (th==="dark"?"text-emerald-300":"text-emerald-700"))}>
+        {syncFeedback}
+      </p>
     </div>
   </header>;
 }
@@ -3009,6 +3037,8 @@ export function App(){
   const [authMode,setAuthMode]=useState<"signin"|"signup">("signin");
   const [showAuth,setShowAuth]=useState(false);
   const [manualSyncing,setManualSyncing]=useState(false);
+  const [syncFeedback,setSyncFeedback]=useState("Ready to sync.");
+  const [syncFeedbackError,setSyncFeedbackError]=useState(false);
 
   const t=useT(lang);
 
@@ -3020,8 +3050,25 @@ export function App(){
   const syncStatusMessage = sharedSyncErrors[0] ?? "";
   const refreshSharedSync = useCallback(async()=>{
     setManualSyncing(true);
+    setSyncFeedback("Syncing with cloud…");
+    setSyncFeedbackError(false);
     try{
-      await Promise.allSettled([profilesMeta.syncNow(),tripsMeta.syncNow(),adminPwMeta.syncNow(),siteCfgMeta.syncNow()]);
+      const results = await Promise.allSettled([profilesMeta.syncNow(),tripsMeta.syncNow(),adminPwMeta.syncNow(),siteCfgMeta.syncNow()]);
+      const rejected = results.filter((result): result is PromiseRejectedResult => result.status==="rejected");
+      const latestErrors = [profilesMeta.lastError,tripsMeta.lastError,adminPwMeta.lastError,siteCfgMeta.lastError].filter(Boolean);
+      if(rejected.length>0 || latestErrors.length>0){
+        const rejectedMessage = rejected[0]?.reason instanceof Error
+          ? rejected[0].reason.message
+          : typeof rejected[0]?.reason === "string"
+            ? rejected[0].reason
+            : "";
+        const nextError = formatSyncErrorMessage((latestErrors[0] ?? rejectedMessage) || "");
+        setSyncFeedback(`Sync failed: ${nextError}`);
+        setSyncFeedbackError(true);
+      }else{
+        setSyncFeedback(`Sync completed at ${new Date().toLocaleTimeString()}.`);
+        setSyncFeedbackError(false);
+      }
     }finally{
       setManualSyncing(false);
     }
@@ -3116,7 +3163,8 @@ export function App(){
     {!showLanding&&<Header siteName={siteCfg.siteName} th={theme} setTh={setTheme} lang={lang} setLang={setLang}
       user={user} view={view} setView={setView} t={t}
       onLogout={()=>setUserId("")} onSignIn={()=>{setAuthMode("signin");setShowAuth(true);}}
-      onSync={()=>{refreshSharedSync().catch(()=>{});}} isSyncing={manualSyncing}/>}
+      onSync={()=>{refreshSharedSync().catch(()=>{});}} isSyncing={manualSyncing}
+      syncFeedback={syncFeedback} isSyncError={syncFeedbackError}/>}
 
     {view==="admin"&&!showLanding&&(
       !sharedSyncReady
