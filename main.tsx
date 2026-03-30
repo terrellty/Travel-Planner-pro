@@ -236,6 +236,7 @@ async function cloudD1Query(config:CloudD1Config,sql:string,params:unknown[]=[])
 
   const endpoint = `https://api.cloudflare.com/client/v4/accounts/${config.accountId}/d1/database/${config.databaseId}/query`;
   let res: Response;
+  const normalizedSql = sql.trim();
   try{
     res = await fetch(endpoint,{
       method:"POST",
@@ -243,7 +244,7 @@ async function cloudD1Query(config:CloudD1Config,sql:string,params:unknown[]=[])
         "content-type":"application/json",
         "authorization":`Bearer ${config.apiToken}`,
       },
-      body:JSON.stringify({sql,params}),
+      body:JSON.stringify({sql:normalizedSql,params}),
     });
   }catch(error){
     const raw = error instanceof Error ? error.message : String(error ?? "");
@@ -279,13 +280,14 @@ function formatSyncErrorMessage(message:string){
 }
 
 async function ensureCloudD1Schema(config:CloudD1Config){
-  await cloudD1Query(config,`
-    CREATE TABLE IF NOT EXISTS ai_storage (
-      storage_key TEXT PRIMARY KEY,
-      storage_value TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-  `);
+  await cloudD1Query(
+    config,
+    "CREATE TABLE IF NOT EXISTS ai_storage (storage_key TEXT PRIMARY KEY, storage_value TEXT NOT NULL, updated_at TEXT NOT NULL)"
+  );
+  await cloudD1Query(
+    config,
+    "CREATE INDEX IF NOT EXISTS idx_ai_storage_updated_at ON ai_storage(updated_at)"
+  );
 }
 
 async function verifyCloudD1Config(config:CloudD1Config){
